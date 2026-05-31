@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  collector:
+    build: ./services/collector
+    container_name: worldcup_collector
+    env_file:
+      - .env
+    volumes:
+      - worldcup_data:/app/data
+      - ./datasets:/app/datasets
+    networks:
+      - worldcup_net
+
+  preprocessor:
+    build: ./services/preprocessor
+    container_name: worldcup_preprocessor
+    env_file:
+      - .env
+    volumes:
+      - worldcup_data:/app/data
+    depends_on:
+      - collector
+    networks:
+      - worldcup_net
+
+  trainer:
+    build: ./services/trainer
+    container_name: worldcup_trainer
+    env_file:
+      - .env
+    volumes:
+      - worldcup_data:/app/data
+    depends_on:
+      - preprocessor
+    networks:
+      - worldcup_net
+
+  dashboard:
+    build: ./services/dashboard
+    container_name: worldcup_dashboard
+    env_file:
+      - .env
+    volumes:
+      - worldcup_data:/app/data
+    ports:
+      - "8501:8501"
+    depends_on:
+      - trainer
+    networks:
+      - worldcup_net
+
+volumes:
+  worldcup_data:
+
+networks:
+  worldcup_net:
+    driver: bridge

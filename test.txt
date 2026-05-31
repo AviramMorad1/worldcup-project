@@ -2,3 +2,6 @@
 
 123
 messi is the GOAT
+
+
+docker compose up --build
