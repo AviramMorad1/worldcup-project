@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+services/trainer/models/
+*.pkl
+*.joblib
+
+.DS_Store
