@@ -1,6 +1,8 @@
 import logging
 import time
+import os
 import schedule
+from reddit_collector import collect_reddit_data
 
 logging.basicConfig(
     format="[COLLECTOR][%(levelname)s] %(message)s",
@@ -9,8 +11,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def collection_run():
-    logger.info("Starting collection run placeholder")
+def collection_run() -> None:
+    """
+    Run one collector cycle.
+    Currently collects real Reddit data through RSS.
+    Football CSV loading will be added later.
+    """
+    logger.info("Starting collection run")
+
+    try:
+        collect_reddit_data()
+        logger.info("Collection run completed successfully")
+
+    except Exception:
+        logger.exception("Collection run failed")
 
 
 def main():
