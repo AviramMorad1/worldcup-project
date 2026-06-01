@@ -5,6 +5,7 @@ from features import (
     build_feature_matrix,
     database_exists,
     load_raw_matches,
+    load_raw_rankings,
     validate_training_data,
 )
 from model import (
@@ -37,7 +38,8 @@ def run_training_cycle() -> None:
         save_placeholder_metrics("raw_matches table missing, empty, or invalid")
         return
 
-    X, y = build_feature_matrix(matches_df)
+    rankings_df = load_raw_rankings()
+    X, y = build_feature_matrix(matches_df, rankings_df)
 
     metrics = train_models(X, y)
     save_metrics(metrics)
