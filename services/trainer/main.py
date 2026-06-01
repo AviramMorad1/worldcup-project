@@ -1,6 +1,8 @@
 import logging
 import time
 
+import schedule
+
 from features import (
     build_feature_matrix,
     database_exists,
@@ -22,9 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+RETRAIN_INTERVAL_DAYS = 7
+
 
 def run_training_cycle() -> None:
-    logger.info("Starting trainer cycle")
+    logger.info("Starting collection run")
 
     ensure_model_dir()
 
@@ -52,10 +56,20 @@ def run_training_cycle() -> None:
 
 def main() -> None:
     logger.info("Trainer service started")
+
+    # Run immediately on startup
     run_training_cycle()
 
+    # Schedule weekly retraining
+    schedule.every(RETRAIN_INTERVAL_DAYS).days.do(run_training_cycle)
+    logger.info(
+        "Trainer scheduled to rerun every %d day(s). Entering scheduler loop.",
+        RETRAIN_INTERVAL_DAYS,
+    )
+
     while True:
-        time.sleep(3600)
+        schedule.run_pending()
+        time.sleep(3600)  # wake up every hour to check the schedule
 
 
 if __name__ == "__main__":
