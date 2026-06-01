@@ -68,16 +68,33 @@ def database_exists() -> bool:
     return os.path.exists(DB_PATH)
 
 
+def _open_db() -> sqlite3.Connection:
+    """Open a SQLite connection tuned for a multi-process Docker environment.
+
+    - WAL journal mode: readers never block the writer and the writer never
+      blocks readers, so the collector and trainer can access the DB together.
+    - busy_timeout (60 s): if two writers collide SQLite retries automatically
+      instead of raising "database is locked" immediately.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=60)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=60000")
+    return conn
+
+
 def table_exists(table_name: str) -> bool:
     if not database_exists():
         return False
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        conn = _open_db()
+        try:
             cur = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                 (table_name,),
             )
             return cur.fetchone() is not None
+        finally:
+            conn.close()
     except sqlite3.Error as exc:
         logger.warning("Error checking table existence for '%s': %s", table_name, exc)
         return False
@@ -88,11 +105,14 @@ def load_table(table_name: str) -> pd.DataFrame:
         logger.warning("Table '%s' does not exist — returning empty DataFrame.", table_name)
         return pd.DataFrame()
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        conn = _open_db()
+        try:
             df = pd.read_sql_query(
                 "SELECT * FROM %s" % table_name,  # table names cannot be parameterised
                 conn,
             )
+        finally:
+            conn.close()
         logger.info("Loaded %d rows from table '%s'.", len(df), table_name)
         return df
     except Exception as exc:
@@ -131,19 +151,6 @@ def validate_training_data(matches_df: pd.DataFrame) -> bool:
 # ELO computation
 # ---------------------------------------------------------------------------
 
-def _create_team_elo_table() -> None:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS team_elo (
-                team       TEXT    NOT NULL,
-                year       INTEGER NOT NULL,
-                elo_rating REAL    NOT NULL,
-                PRIMARY KEY (team, year)
-            )
-        """)
-    logger.info("team_elo table ready.")
-
-
 def _elo_expected(rating_a: float, rating_b: float) -> float:
     return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
 
@@ -156,8 +163,6 @@ def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float
 
     Returns dict: {team: {year: elo_before_tournament}}.
     """
-    _create_team_elo_table()
-
     df = matches_df.copy()
     df["score_a"] = pd.to_numeric(df["score_a"], errors="coerce")
     df["score_b"] = pd.to_numeric(df["score_b"], errors="coerce")
@@ -192,19 +197,34 @@ def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float
             elo[team_a] = rating_a + ELO_K * (actual_a - expected_a)
             elo[team_b] = rating_b + ELO_K * ((1.0 - actual_a) - (1.0 - expected_a))
 
-    rows = [
+    snapshot_rows = [
         (team, year, rating)
         for team, years_dict in year_elo_snapshots.items()
         for year, rating in years_dict.items()
     ]
 
-    with sqlite3.connect(DB_PATH) as conn:
+    # Single connection: create table, clear old data, insert — holds the lock once.
+    # _open_db() enables WAL mode and a 60-second busy_timeout so the trainer
+    # waits gracefully when the collector container is also writing.
+    conn = _open_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS team_elo (
+                team       TEXT    NOT NULL,
+                year       INTEGER NOT NULL,
+                elo_rating REAL    NOT NULL,
+                PRIMARY KEY (team, year)
+            )
+        """)
         conn.execute("DELETE FROM team_elo")
         conn.executemany(
             "INSERT INTO team_elo (team, year, elo_rating) VALUES (?, ?, ?)",
-            rows,
+            snapshot_rows,
         )
-    logger.info("Stored %d ELO snapshots in team_elo table.", len(rows))
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("team_elo table ready. Stored %d ELO snapshots.", len(snapshot_rows))
     return year_elo_snapshots
 
 
@@ -294,7 +314,7 @@ def _compute_h2h(
 def build_feature_matrix(
     matches_df: pd.DataFrame,
     rankings_df: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, pd.Series]:
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Build the full feature matrix from raw match and ranking data.
 
     Features produced per match:
@@ -308,10 +328,13 @@ def build_feature_matrix(
 
     Target:
         outcome — 0=team_b wins, 1=draw, 2=team_a wins
+
+    Returns (X, y, years) where years is a Series of tournament year per row,
+    used by model.py for the year-based train/test split.
     """
     if not validate_training_data(matches_df):
         logger.warning("Cannot build feature matrix — training data is invalid.")
-        return pd.DataFrame(), pd.Series(dtype=int)
+        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype=int)
 
     if rankings_df is None:
         rankings_df = pd.DataFrame()
@@ -377,6 +400,7 @@ def build_feature_matrix(
     ]
     X = result_df[feature_cols].reset_index(drop=True)
     y = result_df["outcome"].reset_index(drop=True)
+    years = result_df["year"].reset_index(drop=True)
 
     logger.info("Feature matrix built: %d rows, features=%s.", len(X), feature_cols)
-    return X, y
+    return X, y, years

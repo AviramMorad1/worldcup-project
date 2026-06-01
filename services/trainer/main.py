@@ -39,9 +39,9 @@ def run_training_cycle() -> None:
         return
 
     rankings_df = load_raw_rankings()
-    X, y = build_feature_matrix(matches_df, rankings_df)
+    X, y, years = build_feature_matrix(matches_df, rankings_df)
 
-    metrics = train_models(X, y)
+    metrics = train_models(X, y, years)
     save_metrics(metrics)
 
     logger.info("Trainer cycle completed")
