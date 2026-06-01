@@ -14,6 +14,7 @@ from model import (
     save_placeholder_metrics,
     train_models,
 )
+from predictions import run_2026_predictions
 
 logging.basicConfig(
     format="[TRAINER][%(levelname)s] %(message)s",
@@ -43,6 +44,8 @@ def run_training_cycle() -> None:
 
     metrics = train_models(X, y, years)
     save_metrics(metrics)
+
+    run_2026_predictions()
 
     logger.info("Trainer cycle completed")
 
