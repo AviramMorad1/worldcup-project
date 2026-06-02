@@ -50,7 +50,7 @@ docker-compose up --build --force-recreate <service_name>
 
 | Service | Description | Schedule |
 |---|---|---|
-| `collector` | Loads CSV data + collects Reddit posts via RSS | On startup, then every `COLLECTION_INTERVAL_HOURS` (default 7 days) |
+| `collector` | Loads CSV data + collects Reddit posts via RSS + optionally Telegram | On startup, then every `COLLECTION_INTERVAL_HOURS` (default 7 days) |
 | `preprocessor` | Cleans text, runs VADER/TextBlob sentiment | On startup, then every `PREPROCESS_INTERVAL_MINUTES` (default 60) |
 | `trainer` | Trains XGBoost/RandomForest model, generates 2026 predictions | On startup, then every 7 days |
 | `dashboard` | Streamlit app — predictions, sentiment, historical stats | Continuous on port 8501 |
@@ -61,12 +61,35 @@ docker-compose up --build --force-recreate <service_name>
 
 Copy `.env.example` to `.env` if you want to override defaults:
 
-| Variable | Description |
-|---|---|
-| `COLLECTION_INTERVAL_HOURS` | Hours between Reddit RSS collection cycles (default: 168 = 7 days) |
-| `PREPROCESS_INTERVAL_MINUTES` | Minutes between preprocessing cycles (default: 60) |
+| Variable | Default | Description |
+|---|---|---|
+| `COLLECTION_INTERVAL_HOURS` | `168` | Hours between Reddit RSS collection cycles (7 days) |
+| `PREPROCESS_INTERVAL_MINUTES` | `60` | Minutes between preprocessing cycles |
+| `TELEGRAM_API_ID` | — | Telegram API ID from https://my.telegram.org (optional) |
+| `TELEGRAM_API_HASH` | — | Telegram API hash (optional) |
+| `TELEGRAM_SESSION_NAME` | `worldcup_telegram` | Telethon session file name |
+| `TELEGRAM_CHANNELS` | — | Comma-separated public channel usernames, e.g. `Argentina_fan` |
+| `TELEGRAM_LIMIT_PER_CHANNEL` | `50` | Max messages fetched per channel per cycle |
 
-Reddit data is collected from public RSS feeds. No Reddit API app or credentials are required.
+Reddit data is collected from public RSS feeds. No Reddit API credentials are required.  
+Telegram collection is **optional** — leave the `TELEGRAM_*` variables unset to skip it.
+
+### Enabling Telegram collection
+
+1. Get API credentials from <https://my.telegram.org>.
+2. Add them to `.env`:
+   ```
+   TELEGRAM_API_ID=123456
+   TELEGRAM_API_HASH=your_api_hash_here
+   TELEGRAM_CHANNELS=Argentina_fan
+   ```
+3. Authenticate interactively on the first run (creates the session file):
+   ```bash
+   docker compose run --rm collector python /app/telegram_auth.py
+   ```
+4. After that, the collector runs non-interactively and collects Telegram messages alongside Reddit posts.
+
+> The session file is stored at `/app/data/telegram_sessions/` inside the Docker volume so it persists across container restarts. Never commit it to source control.
 
 ---
 
@@ -88,6 +111,12 @@ Reddit data is collected from public RSS feeds. No Reddit API app or credentials
 | Model artifacts | Yes | `model.pkl` and `metrics.json` with `accuracy` + `f1_macro` |
 | Model quality | Warn | Accuracy or F1 below 50% |
 | Dashboard source | Warn | `services/dashboard/app.py` exists |
+| `processed_posts` schema | Yes | Has `source` and `detected_team` columns |
+| Source distribution | Info | Prints row counts per source (reddit / telegram / telegram_comment) |
+| Team distribution | Info | Prints top detected teams per source |
+| Telegram posts | Warn | `raw_telegram_posts` row count (only if `TELEGRAM_API_ID` is set) |
+| Telegram comments | Warn | `raw_telegram_comments` row count (only if `TELEGRAM_COLLECT_COMMENTS=true`) |
+| Comment team inheritance | Pass/Warn/Fail | ≥ 70 % of `telegram_comment` rows should have `detected_team` |
 
 Exit codes:
 - **0** — all critical checks passed (warnings may still appear)
@@ -142,6 +171,49 @@ Result: PASS
 ```
 
 If you see `Result: FAIL`, inspect the `[FAIL]` lines in the report and check the collector, preprocessor, or trainer logs.
+
+### Manual verification queries
+
+Run these directly against the SQLite database to verify Telegram data and team inheritance:
+
+```sql
+-- Basic row counts
+SELECT COUNT(*) FROM raw_telegram_posts;
+SELECT COUNT(*) FROM raw_telegram_comments;
+
+-- Source distribution in processed_posts
+SELECT source, COUNT(*) AS n
+FROM processed_posts
+GROUP BY source
+ORDER BY n DESC;
+
+-- Top teams by source
+SELECT source, detected_team, COUNT(*) AS n
+FROM processed_posts
+WHERE detected_team IS NOT NULL
+GROUP BY source, detected_team
+ORDER BY source, n DESC;
+
+-- Verify comment → parent post linkage (should show parent post context)
+SELECT c.id,
+       c.body           AS comment_text,
+       p.body           AS parent_post_text
+FROM raw_telegram_comments AS c
+JOIN raw_telegram_posts    AS p ON c.parent_post_id = p.id
+LIMIT 10;
+
+-- Check team inheritance quality for Telegram comments
+SELECT
+    COUNT(*)                                                            AS total_comments_processed,
+    SUM(CASE WHEN detected_team IS NOT NULL THEN 1 ELSE 0 END)         AS with_team,
+    ROUND(
+        100.0 * SUM(CASE WHEN detected_team IS NOT NULL THEN 1 ELSE 0 END)
+        / MAX(COUNT(*), 1),
+        1
+    )                                                                   AS pct_with_team
+FROM processed_posts
+WHERE source = 'telegram_comment';
+```
 
 ---
 

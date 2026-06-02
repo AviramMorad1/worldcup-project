@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from football_loader import load_football_data
 from reddit_collector import collect_reddit_data
+from telegram_collector import collect_telegram_data
 
 logging.basicConfig(
     format="[COLLECTOR][%(levelname)s] %(message)s",
@@ -67,6 +68,13 @@ def collection_run() -> None:
         posts_collected = collect_reddit_data()
     except Exception as exc:
         logger.error("collect_reddit_data raised an unexpected error: %s", exc)
+
+    try:
+        tg_collected = collect_telegram_data()
+        if tg_collected:
+            logger.info("Telegram: %d new message(s) collected this cycle.", tg_collected)
+    except Exception as exc:
+        logger.error("collect_telegram_data raised an unexpected error: %s", exc)
 
     try:
         write_collector_ready_flag(posts_collected)

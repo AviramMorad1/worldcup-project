@@ -4,10 +4,18 @@ main.py
 Preprocessor service entry point for the World Cup sentiment pipeline.
 
 Every cycle:
-  1. Processes any new raw_reddit_posts → processed_posts
-     (VADER + TextBlob scores stored for every post).
-  2. Recomputes team_sentiment_daily aggregations.
-  3. Recomputes trending_words frequencies.
+  1. Processes any new raw posts from all sources (Reddit, Telegram, Telegram comments)
+     → processed_posts  (VADER + TextBlob + detected_team stored per post)
+  2. Backfills detected_team for old rows that pre-date this version.
+  3. Recomputes team_sentiment_daily aggregations.
+  4. Recomputes trending_words frequencies.
+
+Telegram comment team-inheritance rule:
+  - detect team from parent post title/body first
+  - fallback to comment body if parent post has no detectable team
+  - store the result in processed_posts.detected_team
+  This ensures short comments ("Ooh no", "Dem all hurt") still contribute to
+  the correct national team's sentiment when their parent post is team-tagged.
 """
 
 import json
@@ -36,25 +44,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Team keyword map
+# Team keyword map  (order matters — first match wins)
 # ---------------------------------------------------------------------------
 
 TEAM_KEYWORDS: dict[str, list[str]] = {
-    "Brazil":      ["brazil", "brasileirao", "selecao", "neymar", "vinicius"],
-    "France":      ["france", "les bleus", "mbappe", "giroud", "deschamps"],
-    "Germany":     ["germany", "deutschland", "die mannschaft", "muller", "kroos"],
-    "Argentina":   ["argentina", "messi", "albiceleste", "scaloni", "di maria"],
-    "England":     ["england", "three lions", "kane", "southgate", "bellingham"],
-    "Spain":       ["spain", "espana", "la roja", "pedri", "morata", "yamal"],
-    "Portugal":    ["portugal", "ronaldo", "selecao", "leao", "cancelo"],
-    "Netherlands": ["netherlands", "holland", "oranje", "van dijk", "depay"],
-    "Japan":       ["japan", "samurai blue", "minamino", "doan"],
-    "Morocco":     ["morocco", "atlas lions", "hakimi", "ziyech"],
-    "USA":         ["usa", "usmnt", "pulisic", "reyna", "weah"],
-    "Mexico":      ["mexico", "el tri", "lozano", "jimenez"],
+    "Argentina":   ["argentina", "argentine", "albiceleste", "messi", "scaloni",
+                    "di maria", "lautaro", "martinez"],
     "Australia":   ["australia", "socceroos", "leckie", "irvine"],
-    "Senegal":     ["senegal", "teranga lions", "mane", "koulibaly"],
-    "Croatia":     ["croatia", "vatreni", "modric", "gvardiol"],
+    "Belgium":     ["belgium", "red devils", "de bruyne", "lukaku", "courtois", "hazard"],
+    "Brazil":      ["brazil", "brasil", "brasileirao", "selecao", "seleção",
+                    "neymar", "vinicius", "rodrygo"],
+    "Colombia":    ["colombia", "cafeteros", "falcao", "james rodriguez"],
+    "Croatia":     ["croatia", "vatreni", "modric", "gvardiol", "kovacic"],
+    "England":     ["england", "three lions", "kane", "southgate", "bellingham",
+                    "rashford", "saka"],
+    "France":      ["france", "les bleus", "mbappe", "giroud", "deschamps", "griezmann"],
+    "Germany":     ["germany", "deutschland", "die mannschaft", "muller", "kroos", "neuer"],
+    "Ghana":       ["ghana", "black stars", "ayew", "partey", "kudus", "salisu"],
+    "Italy":       ["italy", "italia", "azzurri", "mancini", "chiesa", "donnarumma"],
+    "Japan":       ["japan", "samurai blue", "minamino", "doan", "kubo"],
+    "Korea":       ["south korea", "korea republic", "son heung", "hwang in", "kim min"],
+    "Mexico":      ["mexico", "el tri", "lozano", "jimenez", "ochoa"],
+    "Morocco":     ["morocco", "atlas lions", "hakimi", "ziyech", "amrabat", "ounahi"],
+    "Netherlands": ["netherlands", "holland", "oranje", "van dijk", "depay", "dumfries"],
+    "Portugal":    ["portugal", "ronaldo", "cristiano", "leao", "cancelo", "bernardo silva"],
+    "Senegal":     ["senegal", "teranga lions", "mane", "koulibaly", "diatta"],
+    "Spain":       ["spain", "espana", "la roja", "pedri", "morata", "yamal", "fabian"],
+    "Switzerland": ["switzerland", "swiss nati", "xhaka", "shaqiri", "sommer"],
+    "Uruguay":     ["uruguay", "celeste", "suarez", "cavani", "valverde", "nunez"],
+    "USA":         ["usa", "united states", "usmnt", "pulisic", "reyna", "weah", "dest"],
 }
 
 STOPWORDS: frozenset[str] = frozenset({
@@ -71,6 +89,7 @@ STOPWORDS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
+
 
 def database_exists() -> bool:
     return os.path.exists(DB_PATH)
@@ -91,12 +110,25 @@ def table_exists(table_name: str) -> bool:
         return False
 
 
+def _get_table_columns(table_name: str) -> list[str]:
+    """Return the list of column names for a table, or [] if table does not exist."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            return [row[1] for row in rows]
+    except sqlite3.Error:
+        return []
+
+
 def create_output_tables() -> None:
+    """Create output tables if they do not exist, then run safe column migrations."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS processed_posts (
                 id                    INTEGER PRIMARY KEY AUTOINCREMENT,
                 post_id               TEXT UNIQUE,
+                source                TEXT DEFAULT 'reddit',
+                detected_team         TEXT,
                 cleaned_text          TEXT,
                 tokens_json           TEXT,
                 vader_compound        REAL,
@@ -128,14 +160,51 @@ def create_output_tables() -> None:
         """)
         conn.commit()
     logger.info("Output tables created / verified.")
+    _migrate_processed_posts()
+
+
+def _migrate_processed_posts() -> None:
+    """Add columns to processed_posts that older versions did not include."""
+    cols = _get_table_columns("processed_posts")
+    if not cols:
+        return
+
+    migrations: list[tuple[str, str]] = [
+        ("source",        "ALTER TABLE processed_posts ADD COLUMN source TEXT DEFAULT 'reddit'"),
+        ("detected_team", "ALTER TABLE processed_posts ADD COLUMN detected_team TEXT"),
+    ]
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            for col_name, sql in migrations:
+                if col_name not in cols:
+                    conn.execute(sql)
+                    conn.commit()
+                    logger.info("Migrated processed_posts: added '%s' column.", col_name)
+
+            # Ensure old Reddit rows that have NULL source are labelled correctly
+            conn.execute(
+                "UPDATE processed_posts SET source = 'reddit' WHERE source IS NULL"
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        logger.warning("processed_posts migration failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
 # Team detection
 # ---------------------------------------------------------------------------
 
+
 def detect_team(text: str) -> str | None:
-    """Return the first matching team name found in *text*, or None."""
+    """
+    Return the first matching team name found in *text*, or None.
+
+    Matching is case-insensitive substring search.
+    The TEAM_KEYWORDS dict is ordered: first match wins.
+    """
+    if not text:
+        return None
     lower = text.lower()
     for team, keywords in TEAM_KEYWORDS.items():
         for kw in keywords:
@@ -148,60 +217,163 @@ def detect_team(text: str) -> str | None:
 # Data loading
 # ---------------------------------------------------------------------------
 
+
 def load_unprocessed_posts(limit: int = 100) -> pd.DataFrame:
-    if not table_exists("raw_reddit_posts"):
-        return pd.DataFrame()
-
-    query = """
-        SELECT r.*
-        FROM raw_reddit_posts AS r
-        LEFT JOIN processed_posts AS p ON r.id = p.post_id
-        WHERE p.post_id IS NULL
-        LIMIT ?
     """
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            df = pd.read_sql_query(query, conn, params=(limit,))
-        logger.info("Loaded %d unprocessed post(s).", len(df))
-        return df
-    except Exception as exc:
-        logger.warning("Failed to load unprocessed posts: %s", exc)
+    Load unprocessed posts from all three raw sources.
+
+    For Telegram comments we also JOIN the parent post so that the comment
+    processing step can inherit the team context from the parent post.
+    """
+    frames: list[pd.DataFrame] = []
+
+    # --- Reddit posts ---
+    if table_exists("raw_reddit_posts"):
+        q = """
+            SELECT r.id,
+                   r.title,
+                   r.body,
+                   r.created_utc,
+                   'reddit'    AS source,
+                   NULL        AS parent_title,
+                   NULL        AS parent_body
+            FROM raw_reddit_posts AS r
+            LEFT JOIN processed_posts AS p ON r.id = p.post_id
+            WHERE p.post_id IS NULL
+        """
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                frames.append(pd.read_sql_query(q, conn))
+        except Exception as exc:
+            logger.warning("Failed to load unprocessed Reddit posts: %s", exc)
+
+    # --- Telegram posts ---
+    if table_exists("raw_telegram_posts"):
+        q = """
+            SELECT t.id,
+                   t.title,
+                   t.body,
+                   t.created_utc,
+                   'telegram'  AS source,
+                   NULL        AS parent_title,
+                   NULL        AS parent_body
+            FROM raw_telegram_posts AS t
+            LEFT JOIN processed_posts AS p ON t.id = p.post_id
+            WHERE p.post_id IS NULL
+        """
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                frames.append(pd.read_sql_query(q, conn))
+        except Exception as exc:
+            logger.warning("Failed to load unprocessed Telegram posts: %s", exc)
+
+    # --- Telegram comments (with parent post body for team inheritance) ---
+    if table_exists("raw_telegram_comments"):
+        q = """
+            SELECT c.id,
+                   NULL              AS title,
+                   c.body,
+                   c.created_utc,
+                   'telegram_comment' AS source,
+                   tp.title          AS parent_title,
+                   tp.body           AS parent_body
+            FROM raw_telegram_comments AS c
+            LEFT JOIN raw_telegram_posts AS tp ON c.parent_post_id = tp.id
+            LEFT JOIN processed_posts   AS p  ON c.id = p.post_id
+            WHERE p.post_id IS NULL
+        """
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                df_tc = pd.read_sql_query(q, conn)
+            frames.append(df_tc)
+        except Exception as exc:
+            logger.warning("Failed to load unprocessed Telegram comments: %s", exc)
+
+    if not frames:
         return pd.DataFrame()
 
+    combined = pd.concat(frames, ignore_index=True).head(limit)
+
+    # Log per-source breakdown
+    if not combined.empty and "source" in combined.columns:
+        counts = combined["source"].value_counts().to_dict()
+        logger.info(
+            "Loaded %d unprocessed row(s): %s",
+            len(combined),
+            ", ".join(f"{s}={n}" for s, n in counts.items()),
+        )
+    else:
+        logger.info("Loaded %d unprocessed row(s).", len(combined))
+
+    return combined
+
 
 # ---------------------------------------------------------------------------
-# Post processing  (VADER + TextBlob stored per post)
+# Post processing  (VADER + TextBlob + detected_team stored per post)
 # ---------------------------------------------------------------------------
+
 
 def process_posts(posts_df: pd.DataFrame) -> int:
+    """
+    Run sentiment analysis and team detection on all rows in *posts_df*.
+
+    Team-detection strategy per source:
+      reddit / telegram  — detect from title + body
+      telegram_comment   — detect from parent post title/body first;
+                           fallback to comment body if parent has no team signal
+    """
     if posts_df.empty:
         return 0
 
     processed = 0
+    inherited_team_count = 0
     now = datetime.now(timezone.utc).isoformat()
 
     with sqlite3.connect(DB_PATH) as conn:
         for _, row in posts_df.iterrows():
-            post_id  = str(row.get("id", ""))
-            title    = row.get("title", "") or ""
-            body     = row.get("body",  "") or ""
-            raw_text = f"{title} {body}"
+            post_id = str(row.get("id", ""))
+            title   = row.get("title", "") or ""
+            body    = row.get("body",  "") or ""
+            source  = str(row.get("source", "reddit") or "reddit")
+            raw_text = f"{title} {body}".strip()
 
             cleaned   = clean_text(raw_text)
             tokens    = tokenize_text(cleaned)
             sentiment = get_basic_sentiment(cleaned)
 
+            # --- Team detection ---
+            detected_team: str | None = None
+
+            if source == "telegram_comment":
+                # Try parent post first — this is the key inheritance step
+                parent_title = row.get("parent_title", "") or ""
+                parent_body  = row.get("parent_body",  "") or ""
+                parent_text  = f"{parent_title} {parent_body}".strip()
+
+                if parent_text:
+                    detected_team = detect_team(parent_text)
+                    if detected_team:
+                        inherited_team_count += 1
+
+                # Fallback: try the comment text itself
+                if not detected_team:
+                    detected_team = detect_team(raw_text)
+            else:
+                detected_team = detect_team(raw_text)
+
             try:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO processed_posts (
-                        post_id, cleaned_text, tokens_json,
+                        post_id, source, detected_team, cleaned_text, tokens_json,
                         vader_compound, vader_pos, vader_neg, vader_neu,
                         textblob_polarity, textblob_subjectivity, processed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         post_id,
+                        source,
+                        detected_team,
                         cleaned,
                         json.dumps(tokens),
                         sentiment["compound"],
@@ -219,15 +391,21 @@ def process_posts(posts_df: pd.DataFrame) -> int:
 
         conn.commit()
 
+    if inherited_team_count:
+        logger.info(
+            "process_posts: %d telegram_comment row(s) inherited team from parent post.",
+            inherited_team_count,
+        )
     return processed
 
 
 # ---------------------------------------------------------------------------
-# Backfill TextBlob for rows that still have NULL textblob_polarity
-# (handles posts processed before this version was deployed)
+# Backfill helpers
 # ---------------------------------------------------------------------------
 
+
 def backfill_textblob() -> None:
+    """Backfill textblob scores for rows that pre-date TextBlob deployment."""
     query = """
         SELECT post_id, cleaned_text
         FROM processed_posts
@@ -261,9 +439,150 @@ def backfill_textblob() -> None:
         logger.warning("backfill_textblob failed: %s", exc)
 
 
+def backfill_detected_team() -> None:
+    """
+    Fill detected_team for processed_posts rows that were inserted before this
+    column was added (or before team detection ran).
+
+    Strategy:
+      - For telegram_comment rows: join raw_telegram_comments → raw_telegram_posts
+        to get parent post body; detect team from parent first.
+      - For all other rows: join the raw_union to get title/body; detect from there.
+
+    Only touches rows where detected_team IS NULL.
+    """
+    cols = _get_table_columns("processed_posts")
+    if "detected_team" not in cols:
+        return  # column migration hasn't run yet — skip
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            null_count = conn.execute(
+                "SELECT COUNT(*) FROM processed_posts WHERE detected_team IS NULL"
+            ).fetchone()[0]
+
+        if null_count == 0:
+            logger.info("backfill_detected_team: nothing to backfill.")
+            return
+
+        logger.info("backfill_detected_team: backfilling %d row(s).", null_count)
+    except sqlite3.Error as exc:
+        logger.warning("backfill_detected_team: count query failed: %s", exc)
+        return
+
+    # --- Backfill telegram_comment rows using parent post ---
+    if table_exists("raw_telegram_comments") and table_exists("raw_telegram_posts"):
+        try:
+            q = """
+                SELECT p.post_id, tp.title, tp.body, c.body AS comment_body
+                FROM processed_posts AS p
+                JOIN raw_telegram_comments AS c  ON c.id = p.post_id
+                LEFT JOIN raw_telegram_posts AS tp ON c.parent_post_id = tp.id
+                WHERE p.detected_team IS NULL
+                  AND p.source = 'telegram_comment'
+            """
+            with sqlite3.connect(DB_PATH) as conn:
+                df = pd.read_sql_query(q, conn)
+
+            updated = 0
+            with sqlite3.connect(DB_PATH) as conn:
+                for _, row in df.iterrows():
+                    parent_text = (
+                        (row.get("title") or "") + " " + (row.get("body") or "")
+                    ).strip()
+                    team = detect_team(parent_text) or detect_team(
+                        row.get("comment_body", "") or ""
+                    )
+                    if team:
+                        conn.execute(
+                            "UPDATE processed_posts SET detected_team=? WHERE post_id=?",
+                            (team, row["post_id"]),
+                        )
+                        updated += 1
+                conn.commit()
+            logger.info(
+                "backfill_detected_team: updated %d telegram_comment row(s).", updated
+            )
+        except Exception as exc:
+            logger.warning(
+                "backfill_detected_team: telegram_comment pass failed: %s", exc
+            )
+
+    # --- Backfill all other rows using raw post union ---
+    union_parts = []
+    for tbl, has_title in [
+        ("raw_reddit_posts", True),
+        ("raw_telegram_posts", True),
+    ]:
+        if table_exists(tbl):
+            union_parts.append(
+                f"SELECT id, title, body FROM {tbl}"  # noqa: S608
+                if has_title
+                else f"SELECT id, NULL AS title, body FROM {tbl}"  # noqa: S608
+            )
+
+    if not union_parts:
+        return
+
+    union_sql = " UNION ALL ".join(union_parts)
+    try:
+        q = f"""
+            SELECT p.post_id, r.title, r.body
+            FROM processed_posts AS p
+            LEFT JOIN ({union_sql}) AS r ON r.id = p.post_id
+            WHERE p.detected_team IS NULL
+              AND p.source != 'telegram_comment'
+        """  # noqa: S608
+        with sqlite3.connect(DB_PATH) as conn:
+            df = pd.read_sql_query(q, conn)
+
+        updated = 0
+        with sqlite3.connect(DB_PATH) as conn:
+            for _, row in df.iterrows():
+                text = (
+                    (row.get("title") or "") + " " + (row.get("body") or "")
+                ).strip()
+                team = detect_team(text)
+                if team:
+                    conn.execute(
+                        "UPDATE processed_posts SET detected_team=? WHERE post_id=?",
+                        (team, row["post_id"]),
+                    )
+                    updated += 1
+            conn.commit()
+        logger.info(
+            "backfill_detected_team: updated %d reddit/telegram-post row(s).", updated
+        )
+    except Exception as exc:
+        logger.warning("backfill_detected_team: general pass failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Aggregation — team_sentiment_daily
 # ---------------------------------------------------------------------------
+
+
+def _raw_union_created_utc_sql() -> str:
+    """Return SQL for a UNION of (id, created_utc) across all raw post tables."""
+    parts = ["SELECT id, created_utc FROM raw_reddit_posts"]
+    if table_exists("raw_telegram_posts"):
+        parts.append("SELECT id, created_utc FROM raw_telegram_posts")
+    if table_exists("raw_telegram_comments"):
+        parts.append("SELECT id, created_utc FROM raw_telegram_comments")
+    return " UNION ALL ".join(parts)
+
+
+def _raw_union_sql() -> str:
+    """Return SQL for a UNION of (id, title, body, created_utc) across all raw post tables."""
+    parts = ["SELECT id, title, body, created_utc FROM raw_reddit_posts"]
+    if table_exists("raw_telegram_posts"):
+        parts.append("SELECT id, title, body, created_utc FROM raw_telegram_posts")
+    if table_exists("raw_telegram_comments"):
+        parts.append(
+            "SELECT id, NULL AS title, body, created_utc FROM raw_telegram_comments"
+        )
+    return " UNION ALL ".join(parts)
+
 
 def _resolve_date_column(df: pd.DataFrame, fn_name: str) -> pd.DataFrame:
     """Derive date from created_utc (post publish time), fallback to processed_at."""
@@ -299,19 +618,29 @@ def _resolve_date_column(df: pd.DataFrame, fn_name: str) -> pd.DataFrame:
 
 
 def compute_team_sentiment_daily() -> None:
-    """Recompute team_sentiment_daily from all rows in processed_posts."""
-    query = """
+    """
+    Recompute team_sentiment_daily from all rows in processed_posts.
+
+    Uses stored processed_posts.detected_team (preferred).
+    For rows where detected_team IS NULL, re-attempts detection from raw text
+    so that existing data before this migration still contributes.
+    Rows with no detectable team are skipped from aggregation.
+    """
+    # Join processed_posts with raw union only to get created_utc and fallback text
+    query = f"""
         SELECT p.post_id,
                p.vader_compound,
                p.textblob_polarity,
                p.processed_at,
+               p.detected_team,
                r.title,
                r.body,
                r.created_utc
         FROM processed_posts AS p
-        LEFT JOIN raw_reddit_posts AS r ON r.id = p.post_id
+        LEFT JOIN ({_raw_union_sql()}) AS r ON r.id = p.post_id
         WHERE p.vader_compound IS NOT NULL
-    """
+    """  # noqa: S608
+
     try:
         with sqlite3.connect(DB_PATH) as conn:
             df = pd.read_sql_query(query, conn)
@@ -323,18 +652,30 @@ def compute_team_sentiment_daily() -> None:
         logger.info("compute_team_sentiment_daily: processed_posts is empty — skipping.")
         return
 
-    # Detect team from raw title+body
-    df["combined_text"] = (
-        df["title"].fillna("") + " " + df["body"].fillna("")
-    ).str.strip()
-    df["team"] = df["combined_text"].apply(detect_team)
-    df = df[df["team"].notna()].copy()
+    # Use stored detected_team; fallback to on-the-fly detection for legacy rows
+    if "detected_team" in df.columns:
+        mask_null = df["detected_team"].isna()
+        if mask_null.any():
+            combined = (df["title"].fillna("") + " " + df["body"].fillna("")).str.strip()
+            df.loc[mask_null, "detected_team"] = combined[mask_null].apply(detect_team)
 
+        df["team"] = df["detected_team"]
+    else:
+        combined = (df["title"].fillna("") + " " + df["body"].fillna("")).str.strip()
+        df["team"] = combined.apply(detect_team)
+
+    skipped = df["team"].isna().sum()
+    if skipped:
+        logger.info(
+            "compute_team_sentiment_daily: skipping %d row(s) with no detectable team.",
+            skipped,
+        )
+
+    df = df[df["team"].notna()].copy()
     if df.empty:
         logger.info("compute_team_sentiment_daily: no team-tagged rows found.")
         return
 
-    # Derive date from created_utc (when the Reddit post was published)
     df = _resolve_date_column(df, "compute_team_sentiment_daily")
 
     agg = (
@@ -347,7 +688,6 @@ def compute_team_sentiment_daily() -> None:
         .reset_index()
     )
 
-    # hype_index = (post_count / max_post_count_that_day) * max(0, avg_vader)
     daily_max = (
         agg.groupby("date")["post_count"]
         .max()
@@ -356,8 +696,7 @@ def compute_team_sentiment_daily() -> None:
     )
     agg = agg.merge(daily_max, on="date")
     agg["hype_index"] = (
-        (agg["post_count"] / agg["max_post_count"]) *
-        agg["avg_vader"].clip(lower=0)
+        (agg["post_count"] / agg["max_post_count"]) * agg["avg_vader"].clip(lower=0)
     )
 
     rows = list(
@@ -390,19 +729,22 @@ def compute_team_sentiment_daily() -> None:
 # Aggregation — trending_words
 # ---------------------------------------------------------------------------
 
+
 def compute_trending_words() -> None:
     """Recompute trending_words from tokens in processed_posts."""
-    query = """
+    query = f"""
         SELECT p.post_id,
                p.tokens_json,
                p.processed_at,
+               p.detected_team,
                r.title,
                r.body,
                r.created_utc
         FROM processed_posts AS p
-        LEFT JOIN raw_reddit_posts AS r ON r.id = p.post_id
+        LEFT JOIN ({_raw_union_sql()}) AS r ON r.id = p.post_id
         WHERE p.tokens_json IS NOT NULL
-    """
+    """  # noqa: S608
+
     try:
         with sqlite3.connect(DB_PATH) as conn:
             df = pd.read_sql_query(query, conn)
@@ -414,12 +756,18 @@ def compute_trending_words() -> None:
         logger.info("compute_trending_words: no data — skipping.")
         return
 
-    df["combined_text"] = (
-        df["title"].fillna("") + " " + df["body"].fillna("")
-    ).str.strip()
-    df["team"] = df["combined_text"].apply(detect_team)
-    df = df[df["team"].notna()].copy()
+    # Use stored detected_team; fallback to text detection for legacy rows
+    if "detected_team" in df.columns:
+        mask_null = df["detected_team"].isna()
+        if mask_null.any():
+            combined = (df["title"].fillna("") + " " + df["body"].fillna("")).str.strip()
+            df.loc[mask_null, "detected_team"] = combined[mask_null].apply(detect_team)
+        df["team"] = df["detected_team"]
+    else:
+        combined = (df["title"].fillna("") + " " + df["body"].fillna("")).str.strip()
+        df["team"] = combined.apply(detect_team)
 
+    df = df[df["team"].notna()].copy()
     if df.empty:
         logger.info("compute_trending_words: no team-tagged rows found.")
         return
@@ -439,10 +787,7 @@ def compute_trending_words() -> None:
             freq[key] = Counter()
         meaningful = [
             t for t in tokens
-            if t
-            and len(t) > 2
-            and t.isalpha()
-            and t not in STOPWORDS
+            if t and len(t) > 2 and t.isalpha() and t not in STOPWORDS
         ]
         freq[key].update(meaningful)
 
@@ -472,16 +817,19 @@ def compute_trending_words() -> None:
 # Collector coordination
 # ---------------------------------------------------------------------------
 
-def _raw_reddit_post_count() -> int:
-    if not table_exists("raw_reddit_posts"):
-        return 0
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            row = conn.execute("SELECT COUNT(*) FROM raw_reddit_posts").fetchone()
-            return int(row[0]) if row else 0
-    except sqlite3.Error as exc:
-        logger.warning("Could not count raw_reddit_posts: %s", exc)
-        return 0
+
+def _raw_post_count() -> int:
+    """Return total number of raw posts across all sources."""
+    total = 0
+    for tbl in ("raw_reddit_posts", "raw_telegram_posts"):
+        if table_exists(tbl):
+            try:
+                with sqlite3.connect(DB_PATH) as conn:
+                    row = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()  # noqa: S608
+                    total += int(row[0]) if row else 0
+            except sqlite3.Error:
+                pass
+    return total
 
 
 def wait_for_collector() -> None:
@@ -490,8 +838,8 @@ def wait_for_collector() -> None:
         logger.info("Collector ready flag already present — proceeding.")
         return
 
-    if _raw_reddit_post_count() > 0:
-        logger.info("Found existing raw Reddit posts — proceeding without wait.")
+    if _raw_post_count() > 0:
+        logger.info("Found existing raw posts — proceeding without wait.")
         return
 
     deadline = time.time() + COLLECTOR_WAIT_MAX_SECONDS
@@ -514,9 +862,9 @@ def wait_for_collector() -> None:
                 logger.info("Collector ready flag found — proceeding.")
             return
 
-        post_count = _raw_reddit_post_count()
-        if post_count > 0:
-            logger.info("Found %d raw Reddit post(s) — proceeding.", post_count)
+        count = _raw_post_count()
+        if count > 0:
+            logger.info("Found %d raw post(s) — proceeding.", count)
             return
 
         time.sleep(COLLECTOR_WAIT_POLL_SECONDS)
@@ -530,6 +878,7 @@ def wait_for_collector() -> None:
 # ---------------------------------------------------------------------------
 # Main cycle
 # ---------------------------------------------------------------------------
+
 
 def _preprocess_interval_seconds() -> int:
     raw = os.environ.get(
@@ -555,28 +904,32 @@ def run_preprocessing_cycle() -> int:
         logger.warning("Database not found — skipping preprocessing.")
         return 0
 
-    if not table_exists("raw_reddit_posts"):
-        logger.warning("raw_reddit_posts table not found — waiting for collector.")
+    has_reddit   = table_exists("raw_reddit_posts")
+    has_telegram = table_exists("raw_telegram_posts")
+    has_tg_comm  = table_exists("raw_telegram_comments")
+
+    if not has_reddit and not has_telegram and not has_tg_comm:
+        logger.warning("No raw post tables found — waiting for collector.")
         create_output_tables()
         return 0
 
     create_output_tables()
 
-    processed_count = 0
-
-    # 1. Process any new posts (VADER + TextBlob)
+    # 1. Process new posts/comments
     posts_df = load_unprocessed_posts()
+    processed_count = 0
     if posts_df.empty:
-        logger.info("No unprocessed Reddit posts found.")
+        logger.info("No unprocessed posts found in any source.")
     else:
         processed_count = process_posts(posts_df)
 
-    logger.info("Processed %d new post(s).", processed_count)
+    logger.info("Processed %d new row(s) this cycle.", processed_count)
 
-    # 2. Backfill TextBlob for any rows that pre-date this deployment
+    # 2. Backfill old rows
     backfill_textblob()
+    backfill_detected_team()
 
-    # 3. Recompute aggregations unconditionally — runs even when no new posts
+    # 3. Recompute aggregations
     compute_team_sentiment_daily()
     compute_trending_words()
 
