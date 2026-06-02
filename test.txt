@@ -5,3 +5,5 @@ messi is the GOAT
 
 
 docker compose up --build
+
+docker compose up -d
