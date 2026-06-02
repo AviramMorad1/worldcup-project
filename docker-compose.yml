@@ -19,6 +19,8 @@ services:
       - .env
     volumes:
       - worldcup_data:/app/data
+      - ./scripts:/scripts:ro
+      - ./services/dashboard:/services/dashboard:ro
     depends_on:
       - collector
     networks:
