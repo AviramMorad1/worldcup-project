@@ -17,9 +17,8 @@ All services share one SQLite database on a Docker named volume.
 git clone <repo-url>
 cd worldcup-project
 
-# 2. Copy and fill in your Reddit API credentials
+# 2. Copy environment config (optional — defaults work for RSS collection)
 cp .env.example .env
-# Edit .env and add your REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET
 
 # 3. Place CSV datasets in datasets/
 #    matches.csv   — https://www.kaggle.com/datasets/abecklas/fifa-world-cup
@@ -48,7 +47,7 @@ docker-compose up --build --force-recreate <service_name>
 
 | Service | Description | Schedule |
 |---|---|---|
-| `collector` | Loads CSV data + scrapes Reddit posts | On startup, then every 7 days |
+| `collector` | Loads CSV data + collects Reddit posts via RSS | On startup, then every `COLLECTION_INTERVAL_HOURS` (default 7 days) |
 | `preprocessor` | Cleans text, runs VADER/TextBlob sentiment | On startup, then every 7 days |
 | `trainer` | Trains XGBoost/RandomForest model, generates 2026 predictions | On startup, then every 7 days |
 | `dashboard` | Streamlit app — predictions, sentiment, historical stats | Continuous on port 8501 |
@@ -57,16 +56,13 @@ docker-compose up --build --force-recreate <service_name>
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and fill in:
+Copy `.env.example` to `.env` if you want to override defaults:
 
 | Variable | Description |
 |---|---|
-| `REDDIT_CLIENT_ID` | Reddit app client ID |
-| `REDDIT_CLIENT_SECRET` | Reddit app client secret |
-| `REDDIT_USER_AGENT` | User agent string (e.g. `worldcup-project/1.0`) |
-| `COLLECTION_INTERVAL_HOURS` | How often to collect Reddit data (default: 168 = 7 days) |
+| `COLLECTION_INTERVAL_HOURS` | Hours between Reddit RSS collection cycles (default: 168 = 7 days) |
 
-Get Reddit credentials at: https://www.reddit.com/prefs/apps — choose "script" type.
+Reddit data is collected from public RSS feeds. No Reddit API app or credentials are required.
 
 ---
 

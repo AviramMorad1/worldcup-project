@@ -6,7 +6,7 @@
 
 - [ ] אחד מכם יוצר repo ב-GitHub ומוסיף את השאר כ-collaborators
 - [ ] מורידים את שני ה-CSV מ-Kaggle ומניחים ב-`datasets/` (לינקים ב-ARCHITECTURE.md)
-- [ ] פותחים חשבון Reddit app על [https://www.reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) — בוחרים "script", ממלאים שם ו-redirect URI כלשהו. מקבלים `client_id` ו-`client_secret`
+- [ ] פותחים Docker Desktop — Reddit API credentials are **not** required (collection uses public RSS feeds)
 - [ ] כל אחד מוריד Docker Desktop למחשב שלו
 - [ ] מריצים `docker-compose up` ריק (לפני שיש קוד) כדי לוודא ש-Docker עובד
 
@@ -24,12 +24,11 @@
 
 בדוק שהקונטיינר עולה ומייצר `worldcup.db` עם הטבלאות.
 
-**משימה 1.2 — collector: Reddit scraper**
+**משימה 1.2 — collector: Reddit RSS collector**
 פנה ל-Claude Code עם:
 > "Add reddit_collector.py to the collector service.
-> Use PRAW to collect posts and comments from r/worldcup, r/soccer, r/FIFA.
-> Store in raw_reddit_posts and raw_reddit_comments tables.
-> Use INSERT OR IGNORE to avoid duplicates."
+> Collect posts from football subreddits via public RSS feeds (no PRAW/API auth).
+> Store in raw_reddit_posts. Use INSERT OR IGNORE to avoid duplicates."
 
 בדוק בידנית שפוסטים נכנסים ל-DB.
 
@@ -120,9 +119,6 @@
 כתוב בעצמך (לא צריך Claude Code):
 ```
 # .env.example
-REDDIT_CLIENT_ID=your_id_here
-REDDIT_CLIENT_SECRET=your_secret_here
-REDDIT_USER_AGENT=worldcup-project/1.0
 COLLECTION_INTERVAL_HOURS=168
 ```
 וכתוב `README.md` קצר עם הוראות הרצה.

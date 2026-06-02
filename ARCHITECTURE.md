@@ -28,7 +28,7 @@ worldcup-project/
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── main.py             # Entry point + scheduler
-│   │   ├── reddit_collector.py # Reddit PRAW scraper
+│   │   ├── reddit_collector.py # Reddit RSS collector (no API auth)
 │   │   └── football_loader.py  # Historical CSV loader
 │   ├── preprocessor/
 │   │   ├── Dockerfile
@@ -64,27 +64,30 @@ worldcup-project/
 
 **Purpose:** Ingests raw data from two sources into SQLite.
 
-**Runs:** On startup, then every 7 days via `schedule` library (cron-like, inside the container).
+**Runs:** On startup, then every `COLLECTION_INTERVAL_HOURS` (default 168 = 7 days).
 
 **Data sources:**
-- `reddit_collector.py` — Uses `praw` to pull posts and top-level comments from subreddits:
-  `r/worldcup`, `r/soccer`, `r/FIFA`. Query terms: team names, player names, "World Cup 2026".
-  Pulls up to 200 posts per run (hot + new).
+- `reddit_collector.py` — Fetches public RSS feeds from football subreddits:
+  `r/worldcup`, `r/soccer`, `r/FIFA`, `r/football`, `r/PremierLeague`,
+  `r/ChampionsLeague`, `r/LaLiga`, `r/MLS`.
+  Up to 25 posts per subreddit per cycle (~200 posts max). Uses `INSERT OR IGNORE`
+  for deduplication. Comment RSS collection is disabled (downstream uses posts only).
 - `football_loader.py` — One-time load of local CSV files from `datasets/` into SQLite on first run.
   Checks if data already loaded before re-importing.
 
 **Output tables:**
 - `raw_reddit_posts` (id, subreddit, title, body, author, score, created_utc, collected_at)
-- `raw_reddit_comments` (id, post_id, body, score, created_utc, collected_at)
+- `raw_reddit_comments` (schema retained for compatibility; not populated currently)
 - `raw_matches` (id, year, stage, team_a, team_b, score_a, score_b, winner)
 - `raw_rankings` (team, year, rank, points)
 
-**Key libraries:** `praw`, `schedule`, `sqlite3`
+**Key libraries:** `requests`, `feedparser`, `sqlite3`
 
 **Environment variables needed:**
-- `REDDIT_CLIENT_ID`
-- `REDDIT_CLIENT_SECRET`
-- `REDDIT_USER_AGENT`
+- `COLLECTION_INTERVAL_HOURS` — hours between Reddit RSS collection cycles (default: 168)
+
+**Coordination:** Writes `/app/data/collector_ready.flag` after each collection cycle so the
+preprocessor can avoid starting before posts are inserted.
 
 ---
 
@@ -92,7 +95,8 @@ worldcup-project/
 
 **Purpose:** Cleans raw data and enriches it with NLP features.
 
-**Runs:** 30 minutes after collector on each cycle (use `schedule` with offset, or check for new unprocessed rows).
+**Runs:** On startup (after waiting for collector readiness), then hourly idle loop.
+On first start, polls for `collector_ready.flag` or non-empty `raw_reddit_posts` (up to 30 min).
 
 **Logic:**
 - `text_cleaner.py` — Lowercase, remove URLs, remove special characters, tokenize.
@@ -201,23 +205,21 @@ Defined in `.env` file (gitignored). `.env.example` committed to repo.
 Loaded via `env_file: .env` in docker-compose.yml.
 
 ```
-REDDIT_CLIENT_ID=your_id_here
-REDDIT_CLIENT_SECRET=your_secret_here
-REDDIT_USER_AGENT=worldcup-project/1.0
 COLLECTION_INTERVAL_HOURS=168
 ```
+
+Reddit posts are collected via public RSS feeds. No Reddit API credentials are required.
 
 ---
 
 ## Data Flow
 
 ```
-[Reddit API]          [datasets/*.csv]
+[Reddit RSS]          [datasets/*.csv]
       │                      │
       ▼                      ▼
 ┌─────────────┐       loads on first run
 │  collector  │ ─────────────────────────▶ raw_reddit_posts
-│             │                           raw_reddit_comments
 │             │                           raw_matches
 └─────────────┘                           raw_rankings
                                                │

@@ -24,6 +24,9 @@ from sentiment import get_basic_sentiment
 from text_cleaner import clean_text, tokenize_text
 
 DB_PATH = "/app/data/worldcup.db"
+COLLECTOR_READY_FLAG = "/app/data/collector_ready.flag"
+COLLECTOR_WAIT_POLL_SECONDS = 10
+COLLECTOR_WAIT_MAX_SECONDS = 1800
 
 logging.basicConfig(
     format="[PREPROCESSOR][%(levelname)s] %(message)s",
@@ -261,6 +264,39 @@ def backfill_textblob() -> None:
 # Aggregation — team_sentiment_daily
 # ---------------------------------------------------------------------------
 
+def _resolve_date_column(df: pd.DataFrame, fn_name: str) -> pd.DataFrame:
+    """Derive date from created_utc (post publish time), fallback to processed_at."""
+    if "created_utc" in df.columns:
+        primary = pd.to_datetime(df["created_utc"], unit="s", utc=True, errors="coerce")
+    else:
+        primary = pd.Series(pd.NaT, index=df.index)
+
+    fallback = pd.to_datetime(df["processed_at"], utc=True, errors="coerce")
+
+    n_fallback = primary.isna().sum()
+    if n_fallback > 0:
+        logger.warning(
+            "%s: %d row(s) have missing/invalid created_utc — falling back to processed_at.",
+            fn_name,
+            n_fallback,
+        )
+
+    resolved = primary.where(primary.notna(), fallback)
+    df = df.copy()
+    df["date"] = resolved.dt.date.astype(str)
+
+    before = len(df)
+    df = df[df["date"].notna() & (df["date"] != "NaT") & (df["date"] != "None")]
+    dropped = before - len(df)
+    if dropped:
+        logger.warning(
+            "%s: dropped %d row(s) where both created_utc and processed_at were invalid.",
+            fn_name,
+            dropped,
+        )
+    return df
+
+
 def compute_team_sentiment_daily() -> None:
     """Recompute team_sentiment_daily from all rows in processed_posts."""
     query = """
@@ -269,7 +305,8 @@ def compute_team_sentiment_daily() -> None:
                p.textblob_polarity,
                p.processed_at,
                r.title,
-               r.body
+               r.body,
+               r.created_utc
         FROM processed_posts AS p
         LEFT JOIN raw_reddit_posts AS r ON r.id = p.post_id
         WHERE p.vader_compound IS NOT NULL
@@ -296,12 +333,8 @@ def compute_team_sentiment_daily() -> None:
         logger.info("compute_team_sentiment_daily: no team-tagged rows found.")
         return
 
-    # Derive date from processed_at (UTC ISO string)
-    df["date"] = (
-        pd.to_datetime(df["processed_at"], utc=True, errors="coerce")
-        .dt.date.astype(str)
-    )
-    df = df[df["date"].notna() & (df["date"] != "NaT")]
+    # Derive date from created_utc (when the Reddit post was published)
+    df = _resolve_date_column(df, "compute_team_sentiment_daily")
 
     agg = (
         df.groupby(["team", "date"])
@@ -363,7 +396,8 @@ def compute_trending_words() -> None:
                p.tokens_json,
                p.processed_at,
                r.title,
-               r.body
+               r.body,
+               r.created_utc
         FROM processed_posts AS p
         LEFT JOIN raw_reddit_posts AS r ON r.id = p.post_id
         WHERE p.tokens_json IS NOT NULL
@@ -389,11 +423,7 @@ def compute_trending_words() -> None:
         logger.info("compute_trending_words: no team-tagged rows found.")
         return
 
-    df["date"] = (
-        pd.to_datetime(df["processed_at"], utc=True, errors="coerce")
-        .dt.date.astype(str)
-    )
-    df = df[df["date"].notna() & (df["date"] != "NaT")]
+    df = _resolve_date_column(df, "compute_trending_words")
 
     freq: dict[tuple[str, str], Counter] = {}
     for _, row in df.iterrows():
@@ -438,6 +468,65 @@ def compute_trending_words() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Collector coordination
+# ---------------------------------------------------------------------------
+
+def _raw_reddit_post_count() -> int:
+    if not table_exists("raw_reddit_posts"):
+        return 0
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM raw_reddit_posts").fetchone()
+            return int(row[0]) if row else 0
+    except sqlite3.Error as exc:
+        logger.warning("Could not count raw_reddit_posts: %s", exc)
+        return 0
+
+
+def wait_for_collector() -> None:
+    """Wait until the collector finishes its first cycle or posts exist in SQLite."""
+    if os.path.exists(COLLECTOR_READY_FLAG):
+        logger.info("Collector ready flag already present — proceeding.")
+        return
+
+    if _raw_reddit_post_count() > 0:
+        logger.info("Found existing raw Reddit posts — proceeding without wait.")
+        return
+
+    deadline = time.time() + COLLECTOR_WAIT_MAX_SECONDS
+    logger.info(
+        "Waiting for collector (flag or posts), up to %d seconds...",
+        COLLECTOR_WAIT_MAX_SECONDS,
+    )
+
+    while time.time() < deadline:
+        if os.path.exists(COLLECTOR_READY_FLAG):
+            try:
+                with open(COLLECTOR_READY_FLAG, encoding="utf-8") as fh:
+                    payload = json.load(fh)
+                logger.info(
+                    "Collector ready flag found (completed_at=%s, posts=%s).",
+                    payload.get("completed_at"),
+                    payload.get("posts_collected_this_cycle"),
+                )
+            except (OSError, json.JSONDecodeError):
+                logger.info("Collector ready flag found — proceeding.")
+            return
+
+        post_count = _raw_reddit_post_count()
+        if post_count > 0:
+            logger.info("Found %d raw Reddit post(s) — proceeding.", post_count)
+            return
+
+        time.sleep(COLLECTOR_WAIT_POLL_SECONDS)
+
+    logger.warning(
+        "Timed out after %d seconds waiting for collector — proceeding anyway.",
+        COLLECTOR_WAIT_MAX_SECONDS,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main cycle
 # ---------------------------------------------------------------------------
 
@@ -475,6 +564,7 @@ def run_preprocessing_cycle() -> None:
 
 def main() -> None:
     logger.info("Preprocessor service started")
+    wait_for_collector()
     run_preprocessing_cycle()
 
     while True:

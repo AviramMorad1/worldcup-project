@@ -1,11 +1,14 @@
+"""Collect Reddit posts via public RSS feeds (no API credentials required)."""
+
+import calendar
 import hashlib
 import logging
 import re
 import sqlite3
 import time
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from html import unescape
+from urllib.parse import quote
 
 import feedparser
 import requests
@@ -13,20 +16,36 @@ import requests
 
 DB_PATH = "/app/data/worldcup.db"
 
-SUBREDDITS = ["worldcup", "soccer", "FIFA"]
-POST_LIMIT_PER_SUBREDDIT = 50
-COMMENT_LIMIT_PER_POST = 10
+SUBREDDITS = [
+    "worldcup",
+    "soccer",
+    "FIFA",
+    "football",
+    "PremierLeague",
+    "ChampionsLeague",
+    "LaLiga",
+    "MLS",
+]
+
+POST_LIMIT_PER_SUBREDDIT = 25
+SUBREDDIT_SLEEP_SECONDS = 8
+
+# Direct subreddit RSS is blocked for some communities (e.g. r/FIFA returns HTTP 403).
+# Fall back to Reddit search RSS for FIFA-related posts across the site.
+SEARCH_FALLBACK_QUERIES: dict[str, str] = {
+    "FIFA": "FIFA World Cup 2026",
+}
 
 USER_AGENT = "worldcup-project/1.0 student research"
 REQUEST_TIMEOUT_SECONDS = 30
+RSS_MAX_RETRIES = 4
+RSS_RETRY_BASE_SECONDS = 15
 
 logger = logging.getLogger(__name__)
 
 
 def create_reddit_tables(conn: sqlite3.Connection) -> None:
-    """
-    Create Reddit raw data tables if they do not exist.
-    """
+    """Create Reddit raw data tables if they do not exist."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_reddit_posts (
@@ -42,6 +61,7 @@ def create_reddit_tables(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Kept for schema compatibility; comment collection is currently disabled.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_reddit_comments (
@@ -59,9 +79,7 @@ def create_reddit_tables(conn: sqlite3.Connection) -> None:
 
 
 def strip_html(value: str) -> str:
-    """
-    Convert simple RSS HTML summaries into plain text.
-    """
+    """Convert simple RSS HTML summaries into plain text."""
     if not value:
         return ""
 
@@ -71,35 +89,42 @@ def strip_html(value: str) -> str:
     return value.strip()
 
 
-def parse_datetime_to_utc_timestamp(value: str | None) -> float:
+def parse_entry_timestamp(entry) -> float:
+    """Return UTC Unix timestamp from a feedparser entry.
+
+    Prefers feedparser's pre-parsed ``published_parsed`` / ``updated_parsed``
+    fields (already normalised to UTC ``time.struct_time``). Falls back to
+    ``datetime.now()`` only when both are missing.
     """
-    Convert RSS published/updated string to UTC timestamp.
-    """
-    if not value:
-        return datetime.now(timezone.utc).timestamp()
+    parsed_struct = (
+        getattr(entry, "published_parsed", None)
+        or getattr(entry, "updated_parsed", None)
+    )
+    if parsed_struct is not None:
+        try:
+            return float(calendar.timegm(parsed_struct))
+        except Exception:
+            logger.warning(
+                "Failed to convert parsed RSS timestamp for entry id=%s",
+                getattr(entry, "id", "unknown"),
+            )
 
-    try:
-        parsed = parsedate_to_datetime(value)
+    raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
+    if raw:
+        logger.warning(
+            "Entry id=%s has no parsed timestamp — using collection time as fallback.",
+            getattr(entry, "id", "unknown"),
+        )
 
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-
-        return parsed.timestamp()
-
-    except Exception:
-        return datetime.now(timezone.utc).timestamp()
+    return datetime.now(timezone.utc).timestamp()
 
 
 def extract_post_id_from_link(link: str) -> str | None:
-    """
-    Extract Reddit post id from links like:
-    https://www.reddit.com/r/soccer/comments/abc123/title/
-    """
+    """Extract Reddit post id from links like /comments/abc123/."""
     if not link:
         return None
 
     match = re.search(r"/comments/([^/]+)/", link)
-
     if not match:
         return None
 
@@ -107,30 +132,68 @@ def extract_post_id_from_link(link: str) -> str | None:
 
 
 def stable_id(prefix: str, value: str) -> str:
-    """
-    Generate stable IDs for RSS entries when Reddit does not provide clean IDs.
-    """
+    """Generate stable IDs when Reddit does not provide a clean post id."""
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
     return f"{prefix}_{digest}"
 
 
-def fetch_rss(url: str):
-    """
-    Fetch RSS using requests so we can set a proper User-Agent.
-    """
-    response = requests.get(
-        url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=REQUEST_TIMEOUT_SECONDS,
+def _looks_like_feed_body(text: str) -> bool:
+    """Return True when response text appears to be RSS/Atom XML."""
+    stripped = text.lstrip()
+    return (
+        stripped.startswith("<?xml")
+        or stripped.startswith("<feed")
+        or stripped.startswith("<rss")
     )
 
-    if response.status_code != 200:
+
+def fetch_rss(url: str):
+    """Fetch RSS with retries and exponential backoff on HTTP 429."""
+    last_error: Exception | None = None
+
+    for attempt in range(RSS_MAX_RETRIES):
+        response = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+
+        if response.status_code == 200:
+            return feedparser.parse(response.text)
+
+        if response.status_code == 429:
+            wait_seconds = RSS_RETRY_BASE_SECONDS * (2 ** attempt)
+            logger.warning(
+                "Rate limited (429) for %s — retry %d/%d in %ds.",
+                url,
+                attempt + 1,
+                RSS_MAX_RETRIES,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+            last_error = RuntimeError(
+                f"RSS request failed. status=429, url={url}, body={response.text[:200]}"
+            )
+            continue
+
+        # Reddit sometimes returns 403 (or other non-200) but still includes a valid feed body.
+        if _looks_like_feed_body(response.text):
+            feed = feedparser.parse(response.text)
+            if getattr(feed, "entries", None):
+                logger.warning(
+                    "RSS returned HTTP %d for %s but body has %d entries — using feed anyway.",
+                    response.status_code,
+                    url,
+                    len(feed.entries),
+                )
+                return feed
+
         raise RuntimeError(
             f"RSS request failed. status={response.status_code}, url={url}, "
             f"body={response.text[:200]}"
         )
 
-    return feedparser.parse(response.text)
+    raise last_error or RuntimeError(f"RSS request failed after retries: {url}")
 
 
 def insert_post(
@@ -163,99 +226,84 @@ def insert_post(
     )
 
 
-def insert_comment(
+def _insert_entries_from_feed(
     conn: sqlite3.Connection,
-    comment_id: str,
-    post_id: str,
-    body: str,
-    score: int,
-    created_utc: float,
+    feed,
+    subreddit_label: str,
     collected_at: str,
-) -> None:
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO raw_reddit_comments
-        (id, post_id, body, score, created_utc, collected_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            comment_id,
-            post_id,
-            body,
-            score,
-            created_utc,
-            collected_at,
-        ),
-    )
-
-
-def collect_comments_from_post_rss(
-    conn: sqlite3.Connection,
-    post_id: str,
-    post_link: str,
-    collected_at: str,
+    *,
+    posts_only: bool = False,
 ) -> int:
-    """
-    Try to collect comments from a Reddit comments RSS feed.
+    """Insert up to POST_LIMIT_PER_SUBREDDIT entries from a parsed feed."""
+    posts_inserted = 0
 
-    This is best-effort. Reddit RSS comment feeds may vary by page and may not
-    always expose all comments.
-    """
-    if not post_link:
-        return 0
+    for entry in feed.entries:
+        if posts_inserted >= POST_LIMIT_PER_SUBREDDIT:
+            break
 
-    rss_url = post_link.rstrip("/") + ".rss"
-
-    try:
-        feed = fetch_rss(rss_url)
-    except Exception:
-        logger.exception("Failed fetching comments RSS for post_id=%s", post_id)
-        return 0
-
-    comments_inserted = 0
-
-    for entry in feed.entries[:COMMENT_LIMIT_PER_POST + 1]:
-        entry_link = getattr(entry, "link", "")
-        entry_id = getattr(entry, "id", "") or entry_link
-
-        # Skip the original submission if it appears in the comments RSS.
-        if post_id in entry_id and comments_inserted == 0:
-            title = getattr(entry, "title", "")
-            if title:
-                continue
-
-        body = strip_html(getattr(entry, "summary", ""))
-
-        if not body:
+        link = getattr(entry, "link", "")
+        if posts_only and "/comments/" not in link:
             continue
 
-        comment_id = stable_id("rss_comment", entry_id or body)
-        created_utc = parse_datetime_to_utc_timestamp(
-            getattr(entry, "published", None) or getattr(entry, "updated", None)
-        )
+        post_id = extract_post_id_from_link(link)
+        if not post_id:
+            if posts_only:
+                continue
+            post_id = stable_id("rss_post", getattr(entry, "id", "") or link)
 
-        insert_comment(
+        title = strip_html(getattr(entry, "title", ""))
+        body = strip_html(getattr(entry, "summary", ""))
+        author = getattr(entry, "author", None)
+        created_utc = parse_entry_timestamp(entry)
+
+        insert_post(
             conn=conn,
-            comment_id=comment_id,
             post_id=post_id,
+            subreddit=subreddit_label,
+            title=title,
             body=body,
+            author=author,
             score=0,
             created_utc=created_utc,
             collected_at=collected_at,
         )
+        posts_inserted += 1
 
-        comments_inserted += 1
-
-        if comments_inserted >= COMMENT_LIMIT_PER_POST:
-            break
-
-    return comments_inserted
+    return posts_inserted
 
 
-def collect_from_subreddit(conn: sqlite3.Connection, subreddit_name: str) -> tuple[int, int]:
-    """
-    Collect real Reddit posts from subreddit RSS and best-effort comments.
-    """
+def _collect_from_search_fallback(
+    conn: sqlite3.Connection,
+    subreddit_name: str,
+    query: str,
+    collected_at: str,
+) -> int:
+    """Collect posts via Reddit search RSS when a subreddit feed is blocked."""
+    search_url = f"https://www.reddit.com/search.rss?q={quote(query)}&sort=new"
+    logger.info(
+        "r/%s direct RSS unavailable — using search RSS fallback (query=%r).",
+        subreddit_name,
+        query,
+    )
+    feed = fetch_rss(search_url)
+    posts_inserted = _insert_entries_from_feed(
+        conn,
+        feed,
+        subreddit_name,
+        collected_at,
+        posts_only=True,
+    )
+    conn.commit()
+    logger.info(
+        "Finished r/%s search fallback: posts=%s",
+        subreddit_name,
+        posts_inserted,
+    )
+    return posts_inserted
+
+
+def collect_from_subreddit(conn: sqlite3.Connection, subreddit_name: str) -> int:
+    """Collect posts from one subreddit RSS feed. Returns posts attempted."""
     logger.info("Collecting Reddit RSS data from r/%s", subreddit_name)
 
     collected_at = datetime.now(timezone.utc).isoformat()
@@ -271,92 +319,52 @@ def collect_from_subreddit(conn: sqlite3.Connection, subreddit_name: str) -> tup
     for rss_url in rss_urls:
         try:
             feed = fetch_rss(rss_url)
-            logger.info("RSS fetch succeeded for r/%s using %s", subreddit_name, rss_url)
-            break
+            if getattr(feed, "entries", None):
+                logger.info("RSS fetch succeeded for r/%s using %s", subreddit_name, rss_url)
+                break
+            logger.warning("RSS feed for %s returned zero entries.", rss_url)
+            feed = None
         except Exception as error:
             last_error = error
             logger.warning("RSS fetch failed for %s: %s", rss_url, error)
 
-    if feed is None:
-        raise RuntimeError(f"Failed fetching RSS for r/{subreddit_name}: {last_error}")
+    if feed is not None and getattr(feed, "entries", None):
+        posts_inserted = _insert_entries_from_feed(
+            conn, feed, subreddit_name, collected_at
+        )
+        conn.commit()
+        logger.info("Finished r/%s RSS collection: posts=%s", subreddit_name, posts_inserted)
+        return posts_inserted
 
-    posts_inserted = 0
-    comments_inserted = 0
-
-    for entry in feed.entries[:POST_LIMIT_PER_SUBREDDIT]:
-        link = getattr(entry, "link", "")
-        post_id = extract_post_id_from_link(link)
-
-        if not post_id:
-            post_id = stable_id("rss_post", getattr(entry, "id", "") or link)
-
-        title = strip_html(getattr(entry, "title", ""))
-        body = strip_html(getattr(entry, "summary", ""))
-        author = getattr(entry, "author", None)
-        created_utc = parse_datetime_to_utc_timestamp(
-            getattr(entry, "published", None) or getattr(entry, "updated", None)
+    fallback_query = SEARCH_FALLBACK_QUERIES.get(subreddit_name)
+    if fallback_query:
+        return _collect_from_search_fallback(
+            conn, subreddit_name, fallback_query, collected_at
         )
 
-        insert_post(
-            conn=conn,
-            post_id=post_id,
-            subreddit=subreddit_name,
-            title=title,
-            body=body,
-            author=author,
-            score=0,
-            created_utc=created_utc,
-            collected_at=collected_at,
-        )
-
-        posts_inserted += 1
-
-        comments_inserted += collect_comments_from_post_rss(
-            conn=conn,
-            post_id=post_id,
-            post_link=link,
-            collected_at=collected_at,
-        )
-
-        time.sleep(1)
-
-    conn.commit()
-
-    logger.info(
-        "Finished r/%s RSS collection: posts=%s comments=%s",
-        subreddit_name,
-        posts_inserted,
-        comments_inserted,
-    )
-
-    return posts_inserted, comments_inserted
+    raise RuntimeError(f"Failed fetching RSS for r/{subreddit_name}: {last_error}")
 
 
-def collect_reddit_data() -> None:
-    """
-    Main Reddit collection function using real Reddit RSS data.
-    """
+def collect_reddit_data() -> int:
+    """Collect Reddit posts from all configured subreddits. Returns total posts attempted."""
     total_posts = 0
-    total_comments = 0
 
     with sqlite3.connect(DB_PATH) as conn:
         create_reddit_tables(conn)
 
-        for subreddit_name in SUBREDDITS:
+        for index, subreddit_name in enumerate(SUBREDDITS):
             try:
-                posts_count, comments_count = collect_from_subreddit(
-                    conn=conn,
-                    subreddit_name=subreddit_name,
-                )
-
+                posts_count = collect_from_subreddit(conn=conn, subreddit_name=subreddit_name)
                 total_posts += posts_count
-                total_comments += comments_count
-
             except Exception:
                 logger.exception("Failed collecting RSS data from r/%s", subreddit_name)
 
+            if index < len(SUBREDDITS) - 1:
+                time.sleep(SUBREDDIT_SLEEP_SECONDS)
+
     logger.info(
-        "Reddit RSS collection finished. total_posts=%s total_comments=%s",
+        "Reddit RSS collection finished. total_posts=%s across %d subreddit(s).",
         total_posts,
-        total_comments,
+        len(SUBREDDITS),
     )
+    return total_posts

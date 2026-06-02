@@ -80,10 +80,14 @@ docker-compose up --build --force-recreate <service_name>
 ### collector
 - Check for existing rows before inserting (use `INSERT OR IGNORE`)
 - Reddit post `id` is the unique key — use it to avoid duplicates
+- Reddit data comes from public RSS feeds (no PRAW/API credentials)
+- Comment RSS collection is disabled; only posts are stored
 - Football CSV loader must check if `raw_matches` already has rows before loading
 - The scheduler should log "Starting collection run" at the beginning of each cycle
+- Write `/app/data/collector_ready.flag` after each collection cycle completes
 
 ### preprocessor
+- Wait for collector readiness (`collector_ready.flag` or existing `raw_reddit_posts`) before the first cycle
 - Only process rows from `raw_reddit_posts` that don't have a corresponding row in `processed_posts`
 - Always download NLTK data at startup: punkt, stopwords, vader_lexicon
 - VADER compound score range: -1.0 to 1.0. Store as REAL in SQLite.
