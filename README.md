@@ -48,7 +48,7 @@ docker-compose up --build --force-recreate <service_name>
 | Service | Description | Schedule |
 |---|---|---|
 | `collector` | Loads CSV data + collects Reddit posts via RSS | On startup, then every `COLLECTION_INTERVAL_HOURS` (default 7 days) |
-| `preprocessor` | Cleans text, runs VADER/TextBlob sentiment | On startup, then every 7 days |
+| `preprocessor` | Cleans text, runs VADER/TextBlob sentiment | On startup, then every `PREPROCESS_INTERVAL_MINUTES` (default 60) |
 | `trainer` | Trains XGBoost/RandomForest model, generates 2026 predictions | On startup, then every 7 days |
 | `dashboard` | Streamlit app — predictions, sentiment, historical stats | Continuous on port 8501 |
 
@@ -61,6 +61,7 @@ Copy `.env.example` to `.env` if you want to override defaults:
 | Variable | Description |
 |---|---|
 | `COLLECTION_INTERVAL_HOURS` | Hours between Reddit RSS collection cycles (default: 168 = 7 days) |
+| `PREPROCESS_INTERVAL_MINUTES` | Minutes between preprocessing cycles (default: 60) |
 
 Reddit data is collected from public RSS feeds. No Reddit API app or credentials are required.
 

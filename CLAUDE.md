@@ -88,7 +88,9 @@ docker-compose up --build --force-recreate <service_name>
 
 ### preprocessor
 - Wait for collector readiness (`collector_ready.flag` or existing `raw_reddit_posts`) before the first cycle
+- Run preprocessing immediately after readiness, then every `PREPROCESS_INTERVAL_MINUTES` (default 60)
 - Only process rows from `raw_reddit_posts` that don't have a corresponding row in `processed_posts`
+- Log and continue on cycle failure — do not crash the container
 - Always download NLTK data at startup: punkt, stopwords, vader_lexicon
 - VADER compound score range: -1.0 to 1.0. Store as REAL in SQLite.
 - Hype index formula: `(post_count / max_post_count_that_day) * max(0, avg_vader_compound)`

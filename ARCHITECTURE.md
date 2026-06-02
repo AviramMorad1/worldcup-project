@@ -95,8 +95,11 @@ preprocessor can avoid starting before posts are inserted.
 
 **Purpose:** Cleans raw data and enriches it with NLP features.
 
-**Runs:** On startup (after waiting for collector readiness), then hourly idle loop.
-On first start, polls for `collector_ready.flag` or non-empty `raw_reddit_posts` (up to 30 min).
+**Runs:** On startup (after waiting for collector readiness), then every
+`PREPROCESS_INTERVAL_MINUTES` (default 60). On first start, polls for
+`collector_ready.flag` or non-empty `raw_reddit_posts` (up to 30 min).
+Each cycle processes only unprocessed posts, then recomputes aggregations.
+Failed cycles are logged and the service continues on the next interval.
 
 **Logic:**
 - `text_cleaner.py` — Lowercase, remove URLs, remove special characters, tokenize.
@@ -113,6 +116,9 @@ On first start, polls for `collector_ready.flag` or non-empty `raw_reddit_posts`
 - `trending_words` (team, date, word, frequency) — top 20 words per team per run
 
 **Key libraries:** `nltk`, `vaderSentiment`, `textblob`
+
+**Environment variables needed:**
+- `PREPROCESS_INTERVAL_MINUTES` — minutes between preprocessing cycles (default: 60)
 
 ---
 
@@ -206,6 +212,7 @@ Loaded via `env_file: .env` in docker-compose.yml.
 
 ```
 COLLECTION_INTERVAL_HOURS=168
+PREPROCESS_INTERVAL_MINUTES=60
 ```
 
 Reddit posts are collected via public RSS feeds. No Reddit API credentials are required.

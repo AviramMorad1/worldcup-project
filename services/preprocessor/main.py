@@ -27,6 +27,7 @@ DB_PATH = "/app/data/worldcup.db"
 COLLECTOR_READY_FLAG = "/app/data/collector_ready.flag"
 COLLECTOR_WAIT_POLL_SECONDS = 10
 COLLECTOR_WAIT_MAX_SECONDS = 1800
+DEFAULT_PREPROCESS_INTERVAL_MINUTES = 60
 
 logging.basicConfig(
     format="[PREPROCESSOR][%(levelname)s] %(message)s",
@@ -530,27 +531,47 @@ def wait_for_collector() -> None:
 # Main cycle
 # ---------------------------------------------------------------------------
 
-def run_preprocessing_cycle() -> None:
+def _preprocess_interval_seconds() -> int:
+    raw = os.environ.get(
+        "PREPROCESS_INTERVAL_MINUTES",
+        str(DEFAULT_PREPROCESS_INTERVAL_MINUTES),
+    )
+    try:
+        minutes = max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid PREPROCESS_INTERVAL_MINUTES=%r — using default %d.",
+            raw,
+            DEFAULT_PREPROCESS_INTERVAL_MINUTES,
+        )
+        minutes = DEFAULT_PREPROCESS_INTERVAL_MINUTES
+    return minutes * 60
+
+
+def run_preprocessing_cycle() -> int:
     logger.info("Starting preprocessing cycle")
 
     if not database_exists():
         logger.warning("Database not found — skipping preprocessing.")
-        return
+        return 0
 
     if not table_exists("raw_reddit_posts"):
         logger.warning("raw_reddit_posts table not found — waiting for collector.")
         create_output_tables()
-        return
+        return 0
 
     create_output_tables()
+
+    processed_count = 0
 
     # 1. Process any new posts (VADER + TextBlob)
     posts_df = load_unprocessed_posts()
     if posts_df.empty:
         logger.info("No unprocessed Reddit posts found.")
     else:
-        count = process_posts(posts_df)
-        logger.info("Processed %d new post(s).", count)
+        processed_count = process_posts(posts_df)
+
+    logger.info("Processed %d new post(s).", processed_count)
 
     # 2. Backfill TextBlob for any rows that pre-date this deployment
     backfill_textblob()
@@ -560,15 +581,28 @@ def run_preprocessing_cycle() -> None:
     compute_trending_words()
 
     logger.info("Preprocessing cycle completed")
+    return processed_count
 
 
 def main() -> None:
+    interval_seconds = _preprocess_interval_seconds()
+    interval_minutes = interval_seconds // 60
+
     logger.info("Preprocessor service started")
+    logger.info("Preprocess interval: %d minute(s).", interval_minutes)
     wait_for_collector()
-    run_preprocessing_cycle()
 
     while True:
-        time.sleep(3600)
+        try:
+            run_preprocessing_cycle()
+        except Exception as exc:
+            logger.exception("Preprocessing cycle failed: %s", exc)
+
+        logger.info(
+            "Sleeping for %d minutes before next preprocessing cycle.",
+            interval_minutes,
+        )
+        time.sleep(interval_seconds)
 
 
 if __name__ == "__main__":
