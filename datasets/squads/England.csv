@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+England,Group L,1,GK,Jordan Pickford,1994-03-07,32,82,0,Everton,0
+England,Group L,2,DF,Ezri Konsa,1997-10-23,28,18,1,Aston Villa,0
+England,Group L,3,DF,Nico O'Reilly,2005-03-21,21,3,0,Manchester City,0
+England,Group L,4,MF,Declan Rice,1999-01-14,27,72,6,Arsenal,0
+England,Group L,5,DF,John Stones,1994-05-28,32,87,3,Manchester City,0
+England,Group L,6,DF,Marc Guéhi,2000-07-13,25,27,1,Manchester City,0
+England,Group L,7,FW,Bukayo Saka,2001-09-05,24,48,14,Arsenal,0
+England,Group L,8,MF,Elliot Anderson,2002-11-06,23,7,0,Nottingham Forest,0
+England,Group L,9,FW,Harry Kane,1993-07-28,32,112,78,Bayern Munich,1
+England,Group L,10,MF,Jude Bellingham,2003-06-29,22,46,6,Real Madrid,0
+England,Group L,11,FW,Marcus Rashford,1997-10-31,28,70,18,Barcelona,0
+England,Group L,12,DF,Tino Livramento,2002-11-12,23,5,0,Newcastle United,0
+England,Group L,13,GK,Dean Henderson,1997-03-12,29,4,0,Crystal Palace,0
+England,Group L,14,MF,Jordan Henderson,1990-06-17,35,89,3,Brentford,0
+England,Group L,15,DF,Dan Burn,1992-05-09,34,6,0,Newcastle United,0
+England,Group L,16,MF,Kobbie Mainoo,2005-04-19,21,12,0,Manchester United,0
+England,Group L,17,MF,Morgan Rogers,2002-07-26,23,13,1,Aston Villa,0
+England,Group L,18,FW,Anthony Gordon,2001-02-24,25,17,2,Newcastle United,0
+England,Group L,19,FW,Ollie Watkins,1995-12-30,30,20,6,Aston Villa,0
+England,Group L,20,FW,Noni Madueke,2002-03-10,24,10,1,Arsenal,0
+England,Group L,21,MF,Eberechi Eze,1998-06-29,27,16,3,Arsenal,0
+England,Group L,22,FW,Ivan Toney,1996-03-16,30,7,1,Al-Ahli,0
+England,Group L,23,GK,James Trafford,2002-10-10,23,1,0,Manchester City,0
+England,Group L,24,DF,Reece James,1999-12-08,26,22,1,Chelsea,0
+England,Group L,25,DF,Djed Spence,2000-08-09,25,4,0,Tottenham Hotspur,0
+England,Group L,26,DF,Jarell Quansah,2003-01-29,23,1,0,Bayer Leverkusen,0

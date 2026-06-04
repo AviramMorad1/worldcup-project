@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+United States,Group D,1,GK,Matt Turner,1994-06-24,31,54,0,New England Revolution,0
+United States,Group D,2,DF,Sergiño Dest,2000-11-03,25,38,3,PSV Eindhoven,0
+United States,Group D,3,DF,Chris Richards,2000-03-28,26,36,3,Crystal Palace,0
+United States,Group D,4,MF,Tyler Adams,1999-02-14,27,53,2,Bournemouth,0
+United States,Group D,5,DF,Antonee Robinson,1997-08-08,28,53,4,Fulham,0
+United States,Group D,6,DF,Auston Trusty,1998-08-12,27,7,0,Celtic,0
+United States,Group D,7,MF,Giovanni Reyna,2002-11-13,23,37,9,Borussia Mönchengladbach,0
+United States,Group D,8,MF,Weston McKennie,1998-08-28,27,65,12,Juventus,0
+United States,Group D,9,FW,Ricardo Pepi,2003-01-09,23,36,13,PSV Eindhoven,0
+United States,Group D,10,FW,Christian Pulisic,1998-09-18,27,85,33,Milan,0
+United States,Group D,11,FW,Brenden Aaronson,2000-10-22,25,57,9,Leeds United,0
+United States,Group D,12,DF,Miles Robinson,1997-03-14,29,39,3,FC Cincinnati,0
+United States,Group D,13,DF,Tim Ream,1987-10-05,38,81,1,Charlotte FC,1
+United States,Group D,14,MF,Sebastian Berhalter,2001-05-10,25,12,1,Vancouver Whitecaps FC,0
+United States,Group D,15,MF,Cristian Roldan,1995-06-03,31,46,0,Seattle Sounders FC,0
+United States,Group D,16,DF,Alex Freeman,2004-08-09,21,16,2,Villarreal,0
+United States,Group D,17,MF,Malik Tillman,2002-05-28,24,29,3,Bayer Leverkusen,0
+United States,Group D,18,DF,Maximilian Arfsten,2001-04-19,25,19,1,Columbus Crew,0
+United States,Group D,19,FW,Haji Wright,1998-03-27,28,20,7,Coventry City,0
+United States,Group D,20,FW,Folarin Balogun,2001-07-03,24,26,9,Monaco,0
+United States,Group D,21,FW,Timothy Weah,2000-02-22,26,50,7,Marseille,0
+United States,Group D,22,DF,Mark McKenzie,1999-02-25,27,28,0,Toulouse,0
+United States,Group D,23,DF,Joe Scally,2002-12-31,23,25,0,Borussia Mönchengladbach,0
+United States,Group D,24,GK,Matt Freese,1998-09-02,27,14,0,New York City FC,0
+United States,Group D,25,GK,Chris Brady,2004-03-03,22,1,0,Chicago Fire FC,0
+United States,Group D,26,FW,Alejandro Zendejas,1998-02-07,28,14,2,América,0

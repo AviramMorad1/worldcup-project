@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Colombia,Group K,1,GK,David Ospina,1988-08-31,37,130,0,Atlético Nacional,0
+Colombia,Group K,2,DF,Daniel Muñoz,1996-05-26,30,45,3,Crystal Palace,0
+Colombia,Group K,3,DF,Jhon Lucumí,1998-06-26,27,36,1,Bologna,0
+Colombia,Group K,4,DF,Santiago Arias,1992-01-13,34,67,0,Independiente,0
+Colombia,Group K,5,MF,Kevin Castaño,2000-09-29,25,25,0,River Plate,0
+Colombia,Group K,6,MF,Richard Ríos,2000-06-02,26,31,2,Benfica,0
+Colombia,Group K,7,FW,Luis Díaz,1997-01-13,29,73,22,Bayern Munich,0
+Colombia,Group K,8,MF,Jorge Carrascal,1998-05-25,28,23,2,Flamengo,0
+Colombia,Group K,9,FW,Jhon Córdoba,1993-05-11,33,21,6,Krasnodar,0
+Colombia,Group K,10,MF,James Rodríguez,1991-07-12,34,125,31,Minnesota United FC,1
+Colombia,Group K,11,MF,Jhon Arias,1997-09-21,28,37,4,Palmeiras,0
+Colombia,Group K,12,GK,Camilo Vargas,1989-03-09,37,41,0,Atlas,0
+Colombia,Group K,13,DF,Yerry Mina,1994-09-23,31,53,8,Cagliari,0
+Colombia,Group K,14,DF,Gustavo Puerta,2003-07-23,22,5,1,Racing Santander,0
+Colombia,Group K,15,MF,Juan Portilla,1998-09-12,27,9,0,Athletico Paranaense,0
+Colombia,Group K,16,MF,Jefferson Lerma,1994-10-25,31,64,5,Crystal Palace,0
+Colombia,Group K,17,DF,Johan Mojica,1992-08-21,33,44,1,Mallorca,0
+Colombia,Group K,18,DF,Willer Ditta,1998-01-23,28,4,0,Cruz Azul,0
+Colombia,Group K,19,FW,Cucho Hernández,1999-04-20,27,8,2,Real Betis,0
+Colombia,Group K,20,MF,Juan Fernando Quintero,1993-01-18,33,48,6,River Plate,0
+Colombia,Group K,21,FW,Jaminton Campaz,2000-05-24,26,9,1,Rosario Central,0
+Colombia,Group K,22,DF,Deiver Machado,1993-09-02,32,15,0,Nantes,0
+Colombia,Group K,23,DF,Davinson Sánchez,1996-06-12,29,78,4,Galatasaray,0
+Colombia,Group K,24,GK,Álvaro Montero,1995-03-29,31,11,0,Vélez Sarsfield,0
+Colombia,Group K,25,FW,Luis Suárez,1997-12-02,28,11,5,Sporting CP,0
+Colombia,Group K,26,FW,Andrés Gómez,2002-09-12,23,7,2,Vasco da Gama,0

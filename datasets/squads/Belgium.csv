@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Belgium,Group G,1,GK,Thibaut Courtois,1992-05-11,34,108,0,Real Madrid,0
+Belgium,Group G,2,DF,Zeno Debast,2003-10-24,22,26,1,Sporting CP,0
+Belgium,Group G,3,DF,Arthur Theate,2000-05-25,26,33,1,Eintracht Frankfurt,0
+Belgium,Group G,4,DF,Brandon Mechele,1993-01-28,33,8,1,Club Brugge,0
+Belgium,Group G,5,DF,Maxim De Cuyper,2000-12-22,25,18,4,Brighton & Hove Albion,0
+Belgium,Group G,6,MF,Axel Witsel,1989-01-12,37,137,12,Girona,0
+Belgium,Group G,7,MF,Kevin De Bruyne,1991-06-28,34,118,36,Napoli,0
+Belgium,Group G,8,MF,Youri Tielemans,1997-05-07,29,84,13,Aston Villa,1
+Belgium,Group G,9,FW,Romelu Lukaku,1993-05-13,33,125,90,Napoli,0
+Belgium,Group G,10,FW,Leandro Trossard,1994-12-04,31,50,11,Arsenal,0
+Belgium,Group G,11,FW,Jérémy Doku,2002-05-27,24,42,7,Manchester City,0
+Belgium,Group G,12,GK,Senne Lammens,2002-07-07,23,2,0,Manchester United,0
+Belgium,Group G,13,GK,Mike Penders,2005-07-31,20,0,0,Strasbourg,0
+Belgium,Group G,14,FW,Dodi Lukébakio,1997-09-24,28,29,5,Benfica,0
+Belgium,Group G,15,DF,Thomas Meunier,1991-09-12,34,79,10,Lille,0
+Belgium,Group G,16,DF,Koni De Winter,2002-06-12,23,8,0,Milan,0
+Belgium,Group G,17,FW,Charles De Ketelaere,2001-03-10,25,29,5,Atalanta,0
+Belgium,Group G,18,DF,Joaquin Seys,2005-03-28,21,5,0,Club Brugge,0
+Belgium,Group G,19,MF,Diego Moreira,2004-08-06,21,2,0,Strasbourg,0
+Belgium,Group G,20,MF,Hans Vanaken,1992-08-24,33,33,7,Club Brugge,0
+Belgium,Group G,21,DF,Timothy Castagne,1995-12-05,30,62,2,Fulham,0
+Belgium,Group G,22,MF,Alexis Saelemaekers,1999-06-27,26,24,2,Milan,0
+Belgium,Group G,23,MF,Nicolas Raskin,2001-02-23,25,12,1,Rangers,0
+Belgium,Group G,24,MF,Amadou Onana,2001-08-16,24,28,1,Aston Villa,0
+Belgium,Group G,25,DF,Nathan Ngoy,2003-06-10,23,3,0,Lille,0
+Belgium,Group G,26,FW,Matias Fernandez-Pardo,2005-02-03,21,1,0,Lille,0

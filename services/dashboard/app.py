@@ -564,11 +564,28 @@ def _apply_clean_layout(fig, **extra):
 # ---------------------------------------------------------------------------
 
 
+_BAND_COLORS = {
+    "High":   ("background:#1a3a2a", "color:#4caf50"),
+    "Medium": ("background:#3a2a10", "color:#ffa726"),
+    "Low":    ("background:#3a1010", "color:#ef9a9a"),
+}
+
+
 def tab_predictions(filters: dict) -> None:
     section_header(
         "🔮 2026 Group Stage Predictions",
-        "ML predictions for all 72 group stage matches. "
-        "Confidence ≥ 55% = high, below = uncertain.",
+        "ML model predictions for all 72 group stage matches.",
+    )
+
+    # Disclaimer
+    st.info(
+        "**Model confidence** is the probability output of a calibrated ML classifier. "
+        "It reflects the model's certainty given available features (FIFA rankings, ELO, "
+        "head-to-head history) — **not** a guaranteed win probability. "
+        "Football has inherent variance that no model fully captures. "
+        "Squad strength (when available) provides a conservative additional signal based on "
+        "current club-season player stats from top 5 European leagues.",
+        icon="ℹ️",
     )
 
     df = load_table("match_predictions")
@@ -594,56 +611,177 @@ def tab_predictions(filters: dict) -> None:
         empty_state("No predictions match the selected groups.")
         return
 
-    # Summary cards
+    has_band         = "confidence_band"            in df26.columns
+    has_expl         = "explanation"                 in df26.columns
+    has_squad        = "squad_strength_a"            in df26.columns
+    has_adj_conf     = "squad_adjusted_confidence"   in df26.columns
+    has_raw_conf     = "raw_model_confidence"        in df26.columns
+    has_adj_applied  = "squad_adjustment_applied"    in df26.columns
+
+    # Load model metrics for baseline comparison
+    metrics_json: dict = {}
+    try:
+        with open(METRICS_JSON_PATH, encoding="utf-8") as fh:
+            metrics_json = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # ── Summary cards ──────────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4, gap="small")
     c1.metric("Matches", len(df26))
     if "confidence" in df26.columns:
-        best = df26.loc[df26["confidence"].idxmax()]
-        c2.metric("Highest confidence",
-                  f"{best.get('team_a','?')} vs {best.get('team_b','?')}")
-        c3.metric("Max confidence", f"{best['confidence']:.1%}")
-        c4.metric("Avg confidence", f"{df26['confidence'].mean():.1%}")
+        avg_conf = df26["confidence"].mean()
+        c2.metric("Avg Model Confidence", f"{avg_conf:.1%}")
+        if has_band:
+            high_count = (df26["confidence_band"] == "High").sum()
+            c3.metric("High-confidence predictions", f"{high_count}/{len(df26)}")
+        else:
+            c3.metric("High-confidence (≥70%)",
+                      f"{(df26['confidence'] >= 0.70).sum()}/{len(df26)}")
+        ml_acc  = metrics_json.get("accuracy")
+        baseline = metrics_json.get("baseline", {}) or {}
+        base_acc = baseline.get("accuracy") if isinstance(baseline, dict) else None
+        if ml_acc is not None and base_acc is not None:
+            c4.metric("ML vs Baseline", f"{float(ml_acc):.1%} vs {float(base_acc):.1%}",
+                      help="ML model accuracy vs. simple FIFA-ranking baseline on test set")
+        elif ml_acc is not None:
+            c4.metric("Model accuracy (test)", f"{float(ml_acc):.1%}")
+        else:
+            c4.metric("Model status", metrics_json.get("status", "unknown"))
+
+    # ── Squad data health cards ──────────────────────────────────────────────
+    if has_squad or has_adj_applied:
+        ps_count  = load_table("raw_player_stats")
+        sq_count  = load_table("raw_national_squads")
+        sqs_count = load_table("team_squad_strength")
+        with st.expander("Squad data health", expanded=False):
+            sc1, sc2, sc3, sc4 = st.columns(4, gap="small")
+            sc1.metric("Player stats loaded", len(ps_count) if not ps_count.empty else 0)
+            sc2.metric("Squad rosters loaded", len(sq_count) if not sq_count.empty else 0)
+            sc3.metric("Teams with strength score", len(sqs_count) if not sqs_count.empty else 0)
+            adj_ct = int(df26["squad_adjustment_applied"].sum()) if has_adj_applied else 0
+            sc4.metric("Predictions adjusted", adj_ct)
+            if has_squad and not df26.empty:
+                st.caption(
+                    "Squad strength is a heuristic based on current club-season stats "
+                    "from top 5 European leagues. Teams with few/no players in these leagues "
+                    "receive a neutral score (50/100) and are not adjusted."
+                )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Table
+    # ── Predictions table ──────────────────────────────────────────────────
     col_map = {
-        "group_name": "Group", "team_a": "Team A", "team_b": "Team B",
-        "predicted_winner": "Winner", "confidence": "Confidence", "stage": "Stage",
+        "group_name":                "Group",
+        "team_a":                    "Team A",
+        "team_b":                    "Team B",
+        "predicted_winner":          "Predicted Winner",
+        "squad_adjusted_confidence": "Adj. Confidence",
+        "confidence":                "Model Confidence",
+        "confidence_band":           "Band",
+        "squad_strength_a":          "Squad A",
+        "squad_strength_b":          "Squad B",
+        "stage":                     "Stage",
     }
     display_cols = [c for c in col_map if c in df26.columns]
     df_show = df26[display_cols].rename(columns=col_map).copy()
 
-    if "Confidence" in df_show.columns:
-        df_show = df_show.sort_values("Confidence", ascending=False)
+    sort_col = "Adj. Confidence" if "Adj. Confidence" in df_show.columns else "Model Confidence"
+    if sort_col in df_show.columns:
+        df_show = df_show.sort_values(sort_col, ascending=False)
 
-        def _cell(v):
-            if isinstance(v, (float, int)):
-                return (
-                    "background:#1a3a2a;color:#4caf50"
-                    if v >= HIGH_CONF_THRESHOLD
-                    else "background:#3a2a10;color:#ffa726"
-                )
+    def _cell_confidence(v):
+        if not isinstance(v, (float, int)):
+            return ""
+        if v >= 0.70:
+            return "background:#1a3a2a;color:#4caf50"
+        if v >= 0.55:
+            return "background:#3a2a10;color:#ffa726"
+        return "background:#3a1010;color:#ef9a9a"
+
+    if "Model Confidence" in df_show.columns:
+        _ = df_show  # already defined above
+
+        def _cell_band(v):
+            if v == "High":
+                return "color:#4caf50;font-weight:600"
+            if v == "Medium":
+                return "color:#ffa726;font-weight:600"
+            if v == "Low":
+                return "color:#ef9a9a;font-weight:600"
             return ""
 
-        styled = df_show.style.map(_cell, subset=["Confidence"]).format(
-            {"Confidence": "{:.1%}"}
-        )
+        conf_cols = [c for c in ["Model Confidence", "Adj. Confidence"] if c in df_show.columns]
+        subset_band = ["Band"] if "Band" in df_show.columns else []
+
+        styled = df_show.style
+        for cc in conf_cols:
+            styled = styled.map(_cell_confidence, subset=[cc])
+        if subset_band:
+            styled = styled.map(_cell_band, subset=subset_band)
+        fmt: dict = {cc: "{:.1%}" for cc in conf_cols}
+        for sq_col in ["Squad A", "Squad B"]:
+            if sq_col in df_show.columns:
+                fmt[sq_col] = "{:.1f}"
+        styled = styled.format(fmt, na_rep="—")
+
         with st.expander("Predictions table", expanded=True):
-            st.dataframe(styled, use_container_width=True, height=400)
+            st.dataframe(styled, use_container_width=True, height=420)
     else:
         with st.expander("Predictions table", expanded=True):
-            st.dataframe(df_show, use_container_width=True, height=400)
+            st.dataframe(df_show, use_container_width=True, height=420)
 
-    # Bar chart
-    if {"team_a", "team_b", "confidence", "predicted_winner"}.issubset(df26.columns):
-        st.markdown("**Confidence by match**")
+    # ── Confidence distribution bar chart ─────────────────────────────────
+    if has_band and "predicted_winner" in df26.columns:
+        band_order = ["High", "Medium", "Low"]
+        band_counts = (
+            df26.groupby("confidence_band")
+            .size()
+            .reindex(band_order)
+            .fillna(0)
+            .reset_index()
+        )
+        band_counts.columns = ["Band", "Count"]
+        col_l, col_r = st.columns([1, 2], gap="small")
+        with col_l:
+            st.markdown("**Confidence distribution**")
+            fig_band = px.bar(
+                band_counts, x="Band", y="Count", color="Band",
+                color_discrete_map={"High": "#4caf50", "Medium": "#ffa726", "Low": "#ef9a9a"},
+                height=220,
+            )
+            _apply_clean_layout(fig_band, showlegend=False)
+            st.plotly_chart(fig_band, use_container_width=True)
+        with col_r:
+            if {"team_a", "team_b", "confidence", "predicted_winner"}.issubset(df26.columns):
+                st.markdown("**Model confidence by match (top 36)**")
+                df_plot = df26.copy()
+                df_plot["Match"] = df_plot["team_a"] + " vs " + df_plot["team_b"]
+                fig = px.bar(
+                    df_plot.sort_values("confidence", ascending=False).head(36),
+                    x="Match", y="confidence",
+                    color="confidence_band" if has_band else "predicted_winner",
+                    color_discrete_map={"High": "#4caf50", "Medium": "#ffa726", "Low": "#ef9a9a"}
+                    if has_band else None,
+                    labels={"confidence": "Model Confidence",
+                            "confidence_band": "Band",
+                            "predicted_winner": "Winner"},
+                    height=CHART_H,
+                )
+                fig.add_hline(y=0.70, line_dash="dot", line_color="#4caf50",
+                              opacity=0.6, annotation_text="70% (High)")
+                fig.add_hline(y=0.55, line_dash="dot", line_color="#ffa726",
+                              opacity=0.6, annotation_text="55% (Medium)")
+                _apply_clean_layout(fig, xaxis_tickangle=-50, margin=dict(b=110))
+                st.plotly_chart(fig, use_container_width=True)
+    elif {"team_a", "team_b", "confidence", "predicted_winner"}.issubset(df26.columns):
+        st.markdown("**Model confidence by match**")
         df_plot = df26.copy()
         df_plot["Match"] = df_plot["team_a"] + " vs " + df_plot["team_b"]
         fig = px.bar(
             df_plot.sort_values("confidence", ascending=False).head(36),
             x="Match", y="confidence", color="predicted_winner",
-            labels={"confidence": "Confidence", "predicted_winner": "Winner"},
+            labels={"confidence": "Model Confidence", "predicted_winner": "Winner"},
             color_discrete_sequence=px.colors.qualitative.Safe,
             height=CHART_H,
         )
@@ -653,6 +791,27 @@ def tab_predictions(filters: dict) -> None:
         _apply_clean_layout(fig, xaxis_tickangle=-50, margin=dict(b=110),
                             legend_title_text="Winner")
         st.plotly_chart(fig, use_container_width=True)
+
+    # ── Per-match explanations expander ───────────────────────────────────
+    if has_expl and "explanation" in df26.columns:
+        with st.expander("Match explanations (key factors per prediction)", expanded=False):
+            expl_df = df26[
+                ["group_name", "team_a", "team_b", "predicted_winner",
+                 "confidence", "confidence_band", "explanation", "key_factors"]
+            ].dropna(subset=["explanation"])
+            expl_df = expl_df.rename(columns={
+                "group_name": "Group",
+                "team_a": "Team A", "team_b": "Team B",
+                "predicted_winner": "Winner",
+                "confidence": "Confidence",
+                "confidence_band": "Band",
+                "explanation": "Summary",
+                "key_factors": "Key Factors",
+            })
+            expl_df["Confidence"] = expl_df["Confidence"].apply(
+                lambda v: f"{v:.1%}" if isinstance(v, float) else v
+            )
+            st.dataframe(expl_df.reset_index(drop=True), use_container_width=True, height=380)
 
 
 # ---------------------------------------------------------------------------
@@ -767,11 +926,26 @@ def tab_sentiment(filters: dict) -> None:
 # Tab 3 — Trending Topics
 # ---------------------------------------------------------------------------
 
+_CATEGORY_LABELS: dict[str, str] = {
+    "player_mention":      "👤 Player Mentions",
+    "sentiment_positive":  "✅ Positive Sentiment",
+    "sentiment_negative":  "⚠️ Negative Sentiment",
+    "injury_concern":      "🤕 Injury / Fitness",
+    "squad_selection":     "📋 Squad / Lineup",
+    "tactical_performance":"⚽ Tactics / Performance",
+    "competition_context": "🏆 Competition Context",
+    "other":               "🔤 Other Terms",
+}
+
+_ALL_CATEGORIES = ["all"] + list(_CATEGORY_LABELS.keys())
+
 
 def tab_trending() -> None:
     section_header(
         "🔤 Trending Topics",
-        "Most frequent words extracted from Reddit posts after stopword removal.",
+        "Player mentions, sentiment words, injuries, squad news and tactical discussion "
+        "extracted from Reddit and Telegram posts. "
+        "Generic boilerplate (football, world, cup, comments, link…) is filtered out.",
     )
 
     df = load_table("trending_words")
@@ -789,53 +963,191 @@ def tab_trending() -> None:
         st.dataframe(df.head(20), use_container_width=True)
         return
 
+    has_category   = "category"   in df.columns
+    has_ngram_type = "ngram_type" in df.columns
+
+    # ── Controls row ──────────────────────────────────────────────────────
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([3, 2, 2, 1], gap="small")
+
     teams = sorted(df["team"].dropna().unique().tolist())
     if not teams:
         empty_state("No team-tagged word data available.")
         return
 
-    col_sel, col_n = st.columns([3, 1], gap="small")
-    with col_sel:
+    with ctrl1:
         sel_team = st.selectbox("Team", teams, key="tw_team")
-    with col_n:
-        top_n = st.slider("Top N", 5, 30, 15, key="tw_n")
 
+    with ctrl2:
+        if has_category:
+            cat_options = _ALL_CATEGORIES
+            cat_labels  = ["All categories"] + [_CATEGORY_LABELS.get(c, c) for c in cat_options[1:]]
+            cat_idx     = st.selectbox(
+                "Category",
+                range(len(cat_options)),
+                format_func=lambda i: cat_labels[i],
+                key="tw_cat",
+            )
+            sel_category = cat_options[cat_idx]
+        else:
+            sel_category = "all"
+
+    with ctrl3:
+        if has_ngram_type:
+            ngram_opts = ["all", "unigram", "bigram"]
+            ngram_labels = ["All (words + phrases)", "Single words", "2-word phrases"]
+            ng_idx = st.selectbox(
+                "Type",
+                range(len(ngram_opts)),
+                format_func=lambda i: ngram_labels[i],
+                key="tw_ng",
+            )
+            sel_ngram = ngram_opts[ng_idx]
+        else:
+            sel_ngram = "all"
+
+    with ctrl4:
+        top_n = st.slider("Top N", 5, 40, 20, key="tw_n")
+
+    # ── Filter data ───────────────────────────────────────────────────────
     df_t = df[df["team"] == sel_team].copy()
 
+    # Optional date filter
     if "date" in df_t.columns:
         dates = sorted(df_t["date"].dropna().unique().tolist())
         if len(dates) > 1:
-            pick = st.multiselect("Filter by date (optional)", dates, key="tw_dates",
-                                  help="Leave blank to aggregate all dates")
+            pick = st.multiselect(
+                "Filter by date (optional)", dates, key="tw_dates",
+                help="Leave blank to aggregate all available dates",
+            )
             if pick:
                 df_t = df_t[df_t["date"].isin(pick)]
 
-    top = df_t.groupby("word", as_index=False)["frequency"].sum().nlargest(top_n, "frequency")
+    # Apply category filter
+    if has_category and sel_category != "all":
+        df_t = df_t[df_t["category"] == sel_category]
 
-    if top.empty:
-        empty_state(f"No word data for {sel_team}.")
+    # Apply ngram_type filter
+    if has_ngram_type and sel_ngram != "all":
+        df_t = df_t[df_t["ngram_type"] == sel_ngram]
+
+    # Aggregate across dates
+    group_cols = ["word"]
+    if has_category:
+        group_cols.append("category")
+    if has_ngram_type:
+        group_cols.append("ngram_type")
+
+    agg_top = (
+        df_t.groupby(group_cols, as_index=False)["frequency"]
+        .sum()
+        .nlargest(top_n, "frequency")
+    )
+
+    if agg_top.empty:
+        empty_state(
+            "No meaningful trending terms found for this filter.",
+            "Try a different team, category, or date range — "
+            "or collect more posts to build richer data.",
+            "🔕",
+        )
         return
+
+    # ── Chart + table ─────────────────────────────────────────────────────
+    # Colour by category when available, else plain blue gradient
+    if has_category and "category" in agg_top.columns:
+        color_col   = "category"
+        color_scale = None
+        color_map   = {
+            "player_mention":       "#58a6ff",
+            "sentiment_positive":   "#4caf50",
+            "sentiment_negative":   "#ef5350",
+            "injury_concern":       "#ff9800",
+            "squad_selection":      "#ab47bc",
+            "tactical_performance": "#26c6da",
+            "competition_context":  "#ffd54f",
+            "other":                "#607d8b",
+        }
+    else:
+        color_col   = "frequency"
+        color_scale = "Blues"
+        color_map   = None
+
+    chart_h = max(340, top_n * 22)
 
     left, right = st.columns([3, 2], gap="small")
     with left:
-        fig = px.bar(
-            top.sort_values("frequency"),
-            x="frequency", y="word", orientation="h",
-            labels={"frequency": "Frequency", "word": "Word"},
-            color="frequency",
-            color_continuous_scale="Blues",
-            height=max(320, top_n * 23),
-        )
-        _apply_clean_layout(fig, coloraxis_showscale=False)
+        if color_scale:
+            fig = px.bar(
+                agg_top.sort_values("frequency"),
+                x="frequency", y="word", orientation="h",
+                labels={"frequency": "Frequency", "word": "Word"},
+                color="frequency", color_continuous_scale=color_scale,
+                height=chart_h,
+            )
+            _apply_clean_layout(fig, coloraxis_showscale=False)
+        else:
+            fig = px.bar(
+                agg_top.sort_values("frequency"),
+                x="frequency", y="word", orientation="h",
+                color="category",
+                color_discrete_map=color_map,
+                labels={"frequency": "Frequency", "word": "Word", "category": "Category"},
+                height=chart_h,
+            )
+            fig.update_layout(
+                legend=dict(
+                    title="Category",
+                    orientation="v",
+                    x=1.01, y=1,
+                    font=dict(size=10),
+                )
+            )
+            _apply_clean_layout(fig)
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        st.caption(f"{len(df_t)} unique words for **{sel_team}**")
-        st.dataframe(
-            top.sort_values("frequency", ascending=False).reset_index(drop=True),
-            use_container_width=True,
-            height=max(320, top_n * 23),
+        n_unique = df[df["team"] == sel_team]["word"].nunique()
+        st.caption(
+            f"Showing top {min(top_n, len(agg_top))} of "
+            f"{n_unique} unique terms for **{sel_team}**"
         )
+        # Rename columns for user-friendly display
+        rename = {"word": "Word/Phrase", "frequency": "Count",
+                  "category": "Category", "ngram_type": "Type"}
+        display_cols = [c for c in ["word", "frequency", "category", "ngram_type"]
+                        if c in agg_top.columns]
+        st.dataframe(
+            agg_top[display_cols]
+            .sort_values("frequency", ascending=False)
+            .rename(columns=rename)
+            .reset_index(drop=True),
+            use_container_width=True,
+            height=chart_h,
+        )
+
+    # ── Category breakdown (only when showing "all") ──────────────────────
+    if has_category and sel_category == "all" and "category" in df_t.columns:
+        cat_agg = (
+            df_t.groupby("category")["frequency"]
+            .sum()
+            .reset_index()
+            .sort_values("frequency", ascending=False)
+        )
+        if not cat_agg.empty:
+            with st.expander("Category breakdown", expanded=False):
+                cat_agg["Category"] = cat_agg["category"].map(
+                    lambda c: _CATEGORY_LABELS.get(c, c)
+                )
+                fig_cat = px.bar(
+                    cat_agg,
+                    x="Category", y="frequency",
+                    labels={"frequency": "Total frequency"},
+                    color="category",
+                    color_discrete_map=color_map,
+                    height=280,
+                )
+                _apply_clean_layout(fig_cat, showlegend=False)
+                st.plotly_chart(fig_cat, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------

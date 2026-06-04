@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Panama,Group L,1,GK,Luis Mejía,1991-03-16,35,56,0,Nacional,0
+Panama,Group L,2,DF,César Blackman,1998-04-02,28,39,3,Slovan Bratislava,0
+Panama,Group L,3,DF,José Córdoba,2001-06-03,25,32,1,Norwich City,0
+Panama,Group L,4,DF,Fidel Escobar,1995-01-09,31,98,4,Saprissa,0
+Panama,Group L,5,DF,Edgardo Fariña,2001-10-19,24,17,0,Pari Nizhny Novgorod,0
+Panama,Group L,6,MF,Cristian Martínez,1997-02-06,29,65,2,Ironi Kiryat Shmona,0
+Panama,Group L,7,MF,José Luis Rodríguez,1998-06-19,27,69,8,Juárez,0
+Panama,Group L,8,MF,Adalberto Carrasquilla,1998-11-28,27,73,3,UNAM,0
+Panama,Group L,9,FW,Tomás Rodríguez,1999-03-09,27,13,4,Saprissa,0
+Panama,Group L,10,MF,Ismael Díaz,1997-05-12,29,56,17,León,0
+Panama,Group L,11,MF,Yoel Bárcenas,1993-10-23,32,103,10,Mazatlán,0
+Panama,Group L,12,GK,César Samudio,1994-02-23,32,5,0,Marathón,0
+Panama,Group L,13,DF,Jiovany Ramos,1997-01-26,29,22,1,Puerto Cabello,0
+Panama,Group L,14,DF,Carlos Harvey,2000-02-03,26,27,3,Minnesota United FC,0
+Panama,Group L,15,DF,Eric Davis,1991-03-31,35,106,9,Plaza Amador,0
+Panama,Group L,16,DF,Andrés Andrade,1998-10-16,27,49,1,LASK,0
+Panama,Group L,17,FW,José Fajardo,1993-08-18,32,67,17,Universidad Católica,0
+Panama,Group L,18,FW,Cecilio Waterman,1991-04-13,35,54,15,Universidad de Concepción,0
+Panama,Group L,19,MF,Alberto Quintero,1987-12-18,38,141,7,Plaza Amador,0
+Panama,Group L,20,MF,Aníbal Godoy,1990-02-10,36,159,4,San Diego FC,1
+Panama,Group L,21,MF,César Yanis,1996-01-28,30,56,5,Cobresal,0
+Panama,Group L,22,GK,Orlando Mosquera,1994-12-25,31,47,0,Al-Fayha,0
+Panama,Group L,23,DF,Michael Amir Murillo,1996-02-11,30,93,9,Beşiktaş,0
+Panama,Group L,24,FW,Azarias Londoño,2001-06-21,24,10,0,Universidad Católica,0
+Panama,Group L,25,DF,Roderick Miller,1992-04-03,34,50,2,Turan Tovuz,0
+Panama,Group L,26,DF,Jorge Gutiérrez,1998-09-01,27,18,0,Deportivo La Guaira,0

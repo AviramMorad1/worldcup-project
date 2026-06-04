@@ -44,9 +44,9 @@ def run_training_cycle() -> None:
         return
 
     rankings_df = load_raw_rankings()
-    X, y, years = build_feature_matrix(matches_df, rankings_df)
+    X, y, years, sample_weight = build_feature_matrix(matches_df, rankings_df)
 
-    metrics = train_models(X, y, years)
+    metrics = train_models(X, y, years, sample_weight)
     save_metrics(metrics)
 
     run_2026_predictions()
@@ -57,10 +57,8 @@ def run_training_cycle() -> None:
 def main() -> None:
     logger.info("Trainer service started")
 
-    # Run immediately on startup
     run_training_cycle()
 
-    # Schedule weekly retraining
     schedule.every(RETRAIN_INTERVAL_DAYS).days.do(run_training_cycle)
     logger.info(
         "Trainer scheduled to rerun every %d day(s). Entering scheduler loop.",
@@ -69,7 +67,7 @@ def main() -> None:
 
     while True:
         schedule.run_pending()
-        time.sleep(3600)  # wake up every hour to check the schedule
+        time.sleep(3600)
 
 
 if __name__ == "__main__":

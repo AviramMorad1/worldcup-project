@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Germany,Group E,1,GK,Manuel Neuer,1986-03-27,40,124,0,Bayern Munich,0
+Germany,Group E,2,DF,Antonio Rüdiger,1993-03-03,33,82,3,Real Madrid,0
+Germany,Group E,3,DF,Waldemar Anton,1996-07-20,29,12,0,Borussia Dortmund,0
+Germany,Group E,4,DF,Jonathan Tah,1996-02-11,30,46,1,Bayern Munich,0
+Germany,Group E,5,MF,Aleksandar Pavlović,2004-05-03,22,10,1,Bayern Munich,0
+Germany,Group E,6,DF,Joshua Kimmich,1995-02-08,31,109,10,Bayern Munich,1
+Germany,Group E,7,FW,Kai Havertz,1999-06-11,27,57,21,Arsenal,0
+Germany,Group E,8,MF,Leon Goretzka,1995-02-06,31,69,15,Bayern Munich,0
+Germany,Group E,9,MF,Jamie Leweling,2001-02-26,25,4,1,VfB Stuttgart,0
+Germany,Group E,10,MF,Jamal Musiala,2003-02-26,23,41,9,Bayern Munich,0
+Germany,Group E,11,FW,Nick Woltemade,2002-02-14,24,11,4,Newcastle United,0
+Germany,Group E,12,GK,Oliver Baumann,1990-06-02,36,12,0,TSG Hoffenheim,0
+Germany,Group E,13,MF,Pascal Groß,1991-06-15,34,18,1,Brighton & Hove Albion,0
+Germany,Group E,14,FW,Maximilian Beier,2002-10-17,23,8,0,Borussia Dortmund,0
+Germany,Group E,15,DF,Nico Schlotterbeck,1999-12-01,26,26,0,Borussia Dortmund,0
+Germany,Group E,16,MF,Angelo Stiller,2001-04-04,25,7,0,VfB Stuttgart,0
+Germany,Group E,17,MF,Florian Wirtz,2003-05-03,23,40,11,Liverpool,0
+Germany,Group E,18,DF,Nathaniel Brown,2003-06-16,22,4,0,Eintracht Frankfurt,0
+Germany,Group E,19,MF,Leroy Sané,1996-01-11,30,75,16,Galatasaray,0
+Germany,Group E,20,MF,Nadiem Amiri,1996-10-27,29,10,1,Mainz 05,0
+Germany,Group E,21,GK,Alexander Nübel,1996-09-30,29,3,0,VfB Stuttgart,0
+Germany,Group E,22,DF,David Raum,1998-04-22,28,36,1,RB Leipzig,0
+Germany,Group E,23,MF,Felix Nmecha,2000-10-10,25,7,1,Borussia Dortmund,0
+Germany,Group E,24,DF,Malick Thiaw,2001-08-08,24,5,0,Newcastle United,0
+Germany,Group E,25,MF,Lennart Karl,2008-02-22,18,3,0,Bayern Munich,0
+Germany,Group E,26,FW,Deniz Undav,1996-07-19,29,8,6,VfB Stuttgart,0

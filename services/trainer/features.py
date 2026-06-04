@@ -1,4 +1,27 @@
+"""
+features.py
+-----------
+Feature engineering for the World Cup match prediction model.
+
+Features per match:
+  rank_diff            — FIFA rank_a minus rank_b at tournament start (year-matched)
+  elo_diff             — ELO_a minus ELO_b at tournament start
+  h2h_win_rate         — win rate of team_a vs team_b (all prior WC meetings)
+  h2h_goal_diff        — avg goal diff (team_a perspective) in prior meetings
+  stage_encoded        — group=0, r16=1, quarter=2, semi=3, final=4
+  is_host_a            — 1 if team_a is a tournament host
+  is_host_b            — 1 if team_b is a tournament host
+  current_rank_diff    — most-recent FIFA rank_a minus rank_b (modern strength proxy)
+  current_points_diff  — most-recent FIFA points_a minus points_b
+
+Target: outcome — 0=team_b wins, 1=draw, 2=team_a wins
+
+build_feature_matrix returns (X, y, years, sample_weight) where:
+  - sample_weight applies recency weighting to down-weight old tournaments
+"""
+
 import logging
+import math
 import os
 import sqlite3
 
@@ -15,7 +38,7 @@ ELO_DEFAULT = 1500.0
 ELO_K = 32.0
 
 # Stage name → encoded integer (0=group … 4=final)
-STAGE_MAP = {
+STAGE_MAP: dict[str, int] = {
     "final": 4,
     "semi-final": 3,
     "semi final": 3,
@@ -26,6 +49,8 @@ STAGE_MAP = {
     "quarter-final": 2,
     "quarter final": 2,
     "quarterfinal": 2,
+    "quarter-finals": 2,
+    "semi-finals": 3,
     "round of 16": 1,
     "round of sixteen": 1,
     "second round": 1,
@@ -50,7 +75,7 @@ WORLD_CUP_HOSTS: dict[int, list[str]] = {
     1990: ["Italy"],
     1994: ["United States"],
     1998: ["France"],
-    2002: ["South Korea", "Japan"],
+    2002: ["South Korea", "Japan", "Korea Republic"],
     2006: ["Germany"],
     2010: ["South Africa"],
     2014: ["Brazil"],
@@ -59,23 +84,35 @@ WORLD_CUP_HOSTS: dict[int, list[str]] = {
     2026: ["United States", "Canada", "Mexico"],
 }
 
+# ---------------------------------------------------------------------------
+# Recency weighting configuration (read from environment)
+# ---------------------------------------------------------------------------
+
+_RECENCY_ENABLED  = os.environ.get("RECENCY_WEIGHTING_ENABLED", "true").lower() == "true"
+_RECENCY_DECAY    = float(os.environ.get("RECENCY_DECAY_RATE",  "0.08"))
+_MIN_WEIGHT       = float(os.environ.get("MIN_RECENCY_WEIGHT",  "0.35"))
+_TARGET_YEAR      = 2026   # anchor year for decay
+
+
+def _compute_recency_weight(match_year: int) -> float:
+    """Exponential decay: w = max(min_weight, exp(-decay * (target - year)))."""
+    if not _RECENCY_ENABLED:
+        return 1.0
+    gap = max(0, _TARGET_YEAR - match_year)
+    w = math.exp(-_RECENCY_DECAY * gap)
+    return max(_MIN_WEIGHT, w)
+
 
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
+
 
 def database_exists() -> bool:
     return os.path.exists(DB_PATH)
 
 
 def _open_db() -> sqlite3.Connection:
-    """Open a SQLite connection tuned for a multi-process Docker environment.
-
-    - WAL journal mode: readers never block the writer and the writer never
-      blocks readers, so the collector and trainer can access the DB together.
-    - busy_timeout (60 s): if two writers collide SQLite retries automatically
-      instead of raising "database is locked" immediately.
-    """
     conn = sqlite3.connect(DB_PATH, timeout=60)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=60000")
@@ -102,7 +139,9 @@ def table_exists(table_name: str) -> bool:
 
 def load_table(table_name: str) -> pd.DataFrame:
     if not table_exists(table_name):
-        logger.warning("Table '%s' does not exist — returning empty DataFrame.", table_name)
+        logger.warning(
+            "Table '%s' does not exist — returning empty DataFrame.", table_name
+        )
         return pd.DataFrame()
     try:
         conn = _open_db()
@@ -132,7 +171,6 @@ def validate_training_data(matches_df: pd.DataFrame) -> bool:
     if matches_df.empty:
         logger.warning("Training data validation failed: raw_matches is empty.")
         return False
-
     missing = REQUIRED_COLUMNS - set(matches_df.columns)
     if missing:
         logger.warning(
@@ -140,7 +178,6 @@ def validate_training_data(matches_df: pd.DataFrame) -> bool:
             sorted(missing),
         )
         return False
-
     logger.info(
         "Training data validated: %d rows, all required columns present.", len(matches_df)
     )
@@ -151,22 +188,17 @@ def validate_training_data(matches_df: pd.DataFrame) -> bool:
 # ELO computation
 # ---------------------------------------------------------------------------
 
+
 def _elo_expected(rating_a: float, rating_b: float) -> float:
     return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
 
 
 def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float]]:
-    """Compute ELO ratings from match history and persist year snapshots to team_elo.
-
-    Ratings are snapshotted before each tournament starts so they reflect
-    accumulated form going into that year's competition.
-
-    Returns dict: {team: {year: elo_before_tournament}}.
-    """
+    """Compute ELO ratings chronologically and persist year snapshots to team_elo."""
     df = matches_df.copy()
     df["score_a"] = pd.to_numeric(df["score_a"], errors="coerce")
     df["score_b"] = pd.to_numeric(df["score_b"], errors="coerce")
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    df["year"]    = pd.to_numeric(df["year"],    errors="coerce")
     df = df.dropna(subset=["score_a", "score_b", "year"]).sort_values("year")
 
     elo: dict[str, float] = {}
@@ -180,7 +212,7 @@ def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float
         for team in teams_in_year:
             year_elo_snapshots.setdefault(team, {})[year] = elo.get(team, ELO_DEFAULT)
 
-        # Update ELO after each match in this tournament
+        # Update ELO after each match
         for _, row in year_group.iterrows():
             team_a, team_b = row["team_a"], row["team_b"]
             rating_a = elo.get(team_a, ELO_DEFAULT)
@@ -203,9 +235,6 @@ def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float
         for year, rating in years_dict.items()
     ]
 
-    # Single connection: create table, clear old data, insert — holds the lock once.
-    # _open_db() enables WAL mode and a 60-second busy_timeout so the trainer
-    # waits gracefully when the collector container is also writing.
     conn = _open_db()
     try:
         conn.execute("""
@@ -224,7 +253,9 @@ def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float
         conn.commit()
     finally:
         conn.close()
-    logger.info("team_elo table ready. Stored %d ELO snapshots.", len(snapshot_rows))
+    logger.info(
+        "team_elo table ready. Stored %d ELO snapshots.", len(snapshot_rows)
+    )
     return year_elo_snapshots
 
 
@@ -232,12 +263,11 @@ def compute_and_store_elo(matches_df: pd.DataFrame) -> dict[str, dict[int, float
 # Feature helpers
 # ---------------------------------------------------------------------------
 
+
 def _encode_stage(stage: object) -> int:
-    """Map a stage string to an integer (group=0 … final=4)."""
     if not isinstance(stage, str):
         return 0
     key = stage.strip().lower()
-    # Exact / substring match (longest key wins via sorted order)
     for pattern in sorted(STAGE_MAP, key=len, reverse=True):
         if pattern in key:
             return STAGE_MAP[pattern]
@@ -249,19 +279,30 @@ def _is_host(team: str, year: int) -> int:
     return int(any(h.lower() == team.strip().lower() for h in hosts))
 
 
-def _get_rank(rankings_df: pd.DataFrame, team: str, year: int) -> float:
-    """Return the FIFA rank for a team at a given year.
+def _get_rank(
+    rankings_df: pd.DataFrame,
+    team: str,
+    year: int,
+    max_year: int | None = None,
+) -> float:
+    """Return the FIFA rank for a team at a given year (closest available).
 
-    Falls back to the closest available year if an exact match is not found.
-    Returns 100 (mid-table neutral) when no ranking data is available at all.
+    If max_year is provided, only considers rankings from years <= max_year
+    (used when building current_rank features to avoid using post-2026 data).
+    Falls back to 150.0 when no data is available.
     """
     if rankings_df.empty:
-        return 100.0
+        return 150.0
 
     team_lower = team.strip().lower()
     team_rows = rankings_df[rankings_df["team"].str.strip().str.lower() == team_lower]
     if team_rows.empty:
-        return 100.0
+        return 150.0
+
+    if max_year is not None:
+        team_rows = team_rows[team_rows["year"].astype(int) <= max_year]
+    if team_rows.empty:
+        return 150.0
 
     exact = team_rows[team_rows["year"].astype(int) == int(year)]
     if not exact.empty:
@@ -273,16 +314,49 @@ def _get_rank(rankings_df: pd.DataFrame, team: str, year: int) -> float:
     return float(closest["rank"])
 
 
+def _get_points(
+    rankings_df: pd.DataFrame,
+    team: str,
+    max_year: int | None = None,
+) -> float:
+    """Return the most recent FIFA points for a team (0.0 if missing)."""
+    if rankings_df.empty or "points" not in rankings_df.columns:
+        return 0.0
+
+    team_lower = team.strip().lower()
+    team_rows = rankings_df[rankings_df["team"].str.strip().str.lower() == team_lower]
+    if team_rows.empty:
+        return 0.0
+
+    if max_year is not None:
+        team_rows = team_rows[team_rows["year"].astype(int) <= max_year]
+    if team_rows.empty:
+        return 0.0
+
+    idx = team_rows["year"].idxmax()
+    pts = team_rows.loc[idx, "points"]
+    try:
+        return float(pts)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _get_current_rank(rankings_df: pd.DataFrame, team: str) -> float:
+    """Return the most recent FIFA rank for a team regardless of tournament year."""
+    return _get_rank(rankings_df, team, year=9999)
+
+
+def _get_current_points(rankings_df: pd.DataFrame, team: str) -> float:
+    """Return the most recent FIFA points for a team."""
+    return _get_points(rankings_df, team)
+
+
 def _compute_h2h(
     past_matches: pd.DataFrame,
     team_a: str,
     team_b: str,
 ) -> tuple[float, float]:
-    """Compute head-to-head win rate and average goal difference for team_a vs team_b.
-
-    Uses only matches from before the current tournament year to prevent leakage.
-    Returns (win_rate_a, avg_goal_diff_a). Defaults to (0.5, 0.0) when no history exists.
-    """
+    """Win rate and avg goal diff for team_a vs team_b (past matches only)."""
     mask = (
         ((past_matches["team_a"] == team_a) & (past_matches["team_b"] == team_b))
         | ((past_matches["team_a"] == team_b) & (past_matches["team_b"] == team_a))
@@ -311,30 +385,35 @@ def _compute_h2h(
 # Public API
 # ---------------------------------------------------------------------------
 
+FEATURE_COLS = [
+    "rank_diff",
+    "elo_diff",
+    "h2h_win_rate",
+    "h2h_goal_diff",
+    "stage_encoded",
+    "is_host_a",
+    "is_host_b",
+    "current_rank_diff",
+    "current_points_diff",
+]
+
+
 def build_feature_matrix(
     matches_df: pd.DataFrame,
     rankings_df: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """Build the full feature matrix from raw match and ranking data.
 
-    Features produced per match:
-        rank_diff       — rank_a minus rank_b (lower rank number = better team)
-        elo_diff        — elo_a minus elo_b at tournament start
-        h2h_win_rate    — historical win rate of team_a against team_b
-        h2h_goal_diff   — average goal difference (team_a perspective) in past meetings
-        stage_encoded   — group=0, r16=1, quarter=2, semi=3, final=4
-        is_host_a       — 1 if team_a is a tournament host
-        is_host_b       — 1 if team_b is a tournament host
-
-    Target:
-        outcome — 0=team_b wins, 1=draw, 2=team_a wins
-
-    Returns (X, y, years) where years is a Series of tournament year per row,
-    used by model.py for the year-based train/test split.
+    Returns (X, y, years, sample_weight):
+      X              — DataFrame with FEATURE_COLS
+      y              — Series with outcome labels (0/1/2)
+      years          — Series with tournament year per row
+      sample_weight  — Series with recency-based sample weights
     """
     if not validate_training_data(matches_df):
         logger.warning("Cannot build feature matrix — training data is invalid.")
-        return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype=int)
+        empty = pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype=int), pd.Series(dtype=float)
+        return empty
 
     if rankings_df is None:
         rankings_df = pd.DataFrame()
@@ -342,36 +421,49 @@ def build_feature_matrix(
     df = matches_df.copy()
     df["score_a"] = pd.to_numeric(df["score_a"], errors="coerce")
     df["score_b"] = pd.to_numeric(df["score_b"], errors="coerce")
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    df["year"]    = pd.to_numeric(df["year"],    errors="coerce")
     df = df.dropna(subset=["score_a", "score_b", "year"]).sort_values("year").reset_index(drop=True)
 
-    # Compute ELO ratings and persist to team_elo table
+    years_present = sorted(df["year"].unique().tolist())
+    logger.info("Building features from %d matches across years: %s", len(df), years_present)
+
+    # Compute ELO ratings and persist to team_elo
     year_elo = compute_and_store_elo(df)
 
-    feature_rows = []
+    feature_rows: list[dict] = []
+
     for _, row in df.iterrows():
-        year = int(row["year"])
+        year   = int(row["year"])
         team_a = row["team_a"]
         team_b = row["team_b"]
 
-        # ELO at start of this tournament (before any match in this year)
-        elo_a = year_elo.get(team_a, {}).get(year, ELO_DEFAULT)
-        elo_b = year_elo.get(team_b, {}).get(year, ELO_DEFAULT)
+        # Year-matched ELO
+        elo_a    = year_elo.get(team_a, {}).get(year, ELO_DEFAULT)
+        elo_b    = year_elo.get(team_b, {}).get(year, ELO_DEFAULT)
         elo_diff = elo_a - elo_b
 
-        # FIFA rankings
-        rank_a = _get_rank(rankings_df, team_a, year)
-        rank_b = _get_rank(rankings_df, team_b, year)
+        # Year-matched FIFA rankings (for rank_diff)
+        rank_a   = _get_rank(rankings_df, team_a, year)
+        rank_b   = _get_rank(rankings_df, team_b, year)
         rank_diff = rank_a - rank_b
 
-        # Head-to-head from matches strictly before this year
+        # Current (most recent) rankings — modern strength proxy
+        curr_rank_a = _get_current_rank(rankings_df, team_a)
+        curr_rank_b = _get_current_rank(rankings_df, team_b)
+        current_rank_diff = curr_rank_a - curr_rank_b
+
+        curr_pts_a = _get_current_points(rankings_df, team_a)
+        curr_pts_b = _get_current_points(rankings_df, team_b)
+        current_points_diff = curr_pts_a - curr_pts_b
+
+        # Head-to-head (strictly before this tournament year)
         past = df[df["year"] < year]
         h2h_win_rate, h2h_goal_diff = _compute_h2h(past, team_a, team_b)
 
-        # Stage and host
+        # Stage and host flags
         stage_encoded = _encode_stage(row.get("stage", ""))
-        is_host_a = _is_host(team_a, year)
-        is_host_b = _is_host(team_b, year)
+        is_host_a     = _is_host(team_a, year)
+        is_host_b     = _is_host(team_b, year)
 
         # Target label
         if row["score_a"] > row["score_b"]:
@@ -381,26 +473,41 @@ def build_feature_matrix(
         else:
             outcome = 0
 
+        # Recency weight
+        weight = _compute_recency_weight(year)
+
         feature_rows.append({
-            "year": year,
-            "rank_diff": rank_diff,
-            "elo_diff": elo_diff,
-            "h2h_win_rate": h2h_win_rate,
-            "h2h_goal_diff": h2h_goal_diff,
-            "stage_encoded": stage_encoded,
-            "is_host_a": is_host_a,
-            "is_host_b": is_host_b,
-            "outcome": outcome,
+            "year":               year,
+            "rank_diff":          rank_diff,
+            "elo_diff":           elo_diff,
+            "h2h_win_rate":       h2h_win_rate,
+            "h2h_goal_diff":      h2h_goal_diff,
+            "stage_encoded":      stage_encoded,
+            "is_host_a":          is_host_a,
+            "is_host_b":          is_host_b,
+            "current_rank_diff":  current_rank_diff,
+            "current_points_diff": current_points_diff,
+            "outcome":            outcome,
+            "sample_weight":      weight,
         })
 
     result_df = pd.DataFrame(feature_rows)
-    feature_cols = [
-        "rank_diff", "elo_diff", "h2h_win_rate",
-        "h2h_goal_diff", "stage_encoded", "is_host_a", "is_host_b",
-    ]
-    X = result_df[feature_cols].reset_index(drop=True)
+    X = result_df[FEATURE_COLS].reset_index(drop=True)
     y = result_df["outcome"].reset_index(drop=True)
     years = result_df["year"].reset_index(drop=True)
+    sample_weight = result_df["sample_weight"].reset_index(drop=True)
 
-    logger.info("Feature matrix built: %d rows, features=%s.", len(X), feature_cols)
-    return X, y, years
+    logger.info(
+        "Feature matrix built: %d rows, features=%s.",
+        len(X), FEATURE_COLS,
+    )
+    if _RECENCY_ENABLED:
+        logger.info(
+            "Recency weighting enabled (decay=%.2f, min=%.2f). "
+            "2022 weight=1.00, 2018 weight=%.2f, 2010 weight=%.2f.",
+            _RECENCY_DECAY, _MIN_WEIGHT,
+            _compute_recency_weight(2018),
+            _compute_recency_weight(2010),
+        )
+
+    return X, y, years, sample_weight

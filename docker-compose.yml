@@ -33,6 +33,7 @@ services:
       - .env
     volumes:
       - worldcup_data:/app/data
+      - ./datasets:/app/datasets:ro
     depends_on:
       - preprocessor
     networks:

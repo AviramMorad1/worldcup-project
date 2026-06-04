@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Senegal,Group I,1,GK,Yehvann Diouf,1999-11-16,26,2,0,Nice,0
+Senegal,Group I,2,DF,Mamadou Sarr,2005-08-29,20,7,0,Chelsea,0
+Senegal,Group I,3,DF,Kalidou Koulibaly,1991-06-20,34,102,2,Al-Hilal,1
+Senegal,Group I,4,DF,Abdoulaye Seck,1992-06-04,34,22,4,Maccabi Haifa,0
+Senegal,Group I,5,MF,Idrissa Gueye,1989-09-26,36,130,7,Everton,0
+Senegal,Group I,6,MF,Pathé Ciss,1994-03-16,32,29,0,Rayo Vallecano,0
+Senegal,Group I,7,FW,Assane Diao,2005-09-07,20,5,0,Como,0
+Senegal,Group I,8,MF,Lamine Camara,2004-01-01,22,32,7,Monaco,0
+Senegal,Group I,9,FW,Bamba Dieng,2000-03-23,26,22,2,Lorient,0
+Senegal,Group I,10,FW,Sadio Mané,1992-04-10,34,127,55,Al-Nassr,0
+Senegal,Group I,11,FW,Nicolas Jackson,2001-06-20,24,32,8,Bayern Munich,0
+Senegal,Group I,12,FW,Cherif Ndiaye,1996-01-23,30,18,4,Samsunspor,0
+Senegal,Group I,13,FW,Iliman Ndiaye,2000-03-06,26,39,4,Everton,0
+Senegal,Group I,14,DF,Ismail Jakobs,1999-08-17,26,29,0,Galatasaray,0
+Senegal,Group I,15,DF,Krépin Diatta,1999-02-25,27,60,2,Monaco,0
+Senegal,Group I,16,GK,Édouard Mendy,1992-03-01,34,56,0,Al-Ahli,0
+Senegal,Group I,17,MF,Pape Matar Sarr,2002-09-14,23,39,4,Tottenham Hotspur,0
+Senegal,Group I,18,FW,Ismaïla Sarr,1998-02-25,28,82,19,Crystal Palace,0
+Senegal,Group I,19,DF,Moussa Niakhaté,1996-03-08,30,30,0,Lyon,0
+Senegal,Group I,20,FW,Ibrahim Mbaye,2008-01-24,18,10,3,Paris Saint-Germain,0
+Senegal,Group I,21,MF,Habib Diarra,2004-01-03,22,20,4,Sunderland,0
+Senegal,Group I,22,MF,Bara Sapoko Ndiaye,2007-12-31,18,1,0,Bayern Munich,0
+Senegal,Group I,23,GK,Mory Diaw,1993-06-22,32,5,0,Le Havre,0
+Senegal,Group I,24,DF,Antoine Mendy,2004-05-27,22,6,0,Nice,0
+Senegal,Group I,25,DF,El Hadji Malick Diouf,2004-12-29,21,19,1,West Ham United,0
+Senegal,Group I,26,MF,Pape Gueye,1999-01-24,27,41,5,Villarreal,0

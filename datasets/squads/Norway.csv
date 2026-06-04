@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Norway,Group I,1,GK,Ørjan Nyland,1990-09-10,35,70,0,Sevilla,0
+Norway,Group I,2,MF,Morten Thorsby,1996-05-05,30,31,0,Cremonese,0
+Norway,Group I,3,DF,Kristoffer Ajer,1998-04-17,28,51,2,Brentford,0
+Norway,Group I,4,DF,Leo Østigård,1999-11-28,26,37,1,Genoa,0
+Norway,Group I,5,DF,David Møller Wolfe,2002-04-23,24,21,1,Wolverhampton Wanderers,0
+Norway,Group I,6,MF,Patrick Berg,1997-11-24,28,42,0,Bodø/Glimt,0
+Norway,Group I,7,FW,Alexander Sørloth,1995-12-05,30,71,26,Atlético Madrid,0
+Norway,Group I,8,MF,Sander Berge,1998-02-14,28,65,1,Fulham,0
+Norway,Group I,9,FW,Erling Haaland,2000-07-21,25,49,55,Manchester City,0
+Norway,Group I,10,MF,Martin Ødegaard,1998-12-17,27,67,4,Arsenal,1
+Norway,Group I,11,FW,Jørgen Strand Larsen,2000-02-06,26,27,6,Crystal Palace,0
+Norway,Group I,12,GK,Sander Tangvik,2002-11-29,23,0,0,Hamburger SV,0
+Norway,Group I,13,GK,Egil Selvik,1997-07-30,28,6,0,Watford,0
+Norway,Group I,14,MF,Fredrik Aursnes,1995-12-10,30,21,1,Benfica,0
+Norway,Group I,15,DF,Fredrik André Bjørkan,1998-08-21,27,20,1,Bodø/Glimt,0
+Norway,Group I,16,DF,Marcus Holmgren Pedersen,2000-07-16,25,32,0,Torino,0
+Norway,Group I,17,DF,Torbjørn Heggem,1999-01-12,27,14,0,Bologna,0
+Norway,Group I,18,MF,Kristian Thorstvedt,1999-03-13,27,36,4,Sassuolo,0
+Norway,Group I,19,MF,Thelo Aasgaard,2002-05-02,24,7,5,Rangers,0
+Norway,Group I,20,FW,Antonio Nusa,2005-04-17,21,23,8,RB Leipzig,0
+Norway,Group I,21,MF,Andreas Schjelderup,2004-06-01,22,11,1,Benfica,0
+Norway,Group I,22,MF,Oscar Bobb,2003-07-12,22,19,2,Fulham,0
+Norway,Group I,23,MF,Jens Petter Hauge,1999-10-12,26,15,1,Bodø/Glimt,0
+Norway,Group I,24,DF,Sondre Langås,2001-02-02,25,3,0,Derby County,0
+Norway,Group I,25,DF,Henrik Falchener,2003-05-08,23,1,0,Viking,0
+Norway,Group I,26,FW,Julian Ryerson,1997-11-17,28,42,1,Borussia Dortmund,0

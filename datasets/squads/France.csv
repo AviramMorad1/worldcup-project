@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+France,Group I,1,GK,Brice Samba,1994-04-25,32,4,0,Rennes,0
+France,Group I,2,DF,Malo Gusto,2003-05-19,23,9,0,Chelsea,0
+France,Group I,3,DF,Lucas Digne,1993-07-20,32,56,0,Aston Villa,0
+France,Group I,4,DF,Dayot Upamecano,1998-10-27,27,36,2,Bayern Munich,0
+France,Group I,5,DF,Jules Koundé,1998-11-12,27,46,0,Barcelona,0
+France,Group I,6,MF,Manu Koné,2001-05-17,25,12,0,Roma,0
+France,Group I,7,FW,Ousmane Dembélé,1997-05-15,29,58,7,Paris Saint-Germain,0
+France,Group I,8,MF,Aurélien Tchouaméni,2000-01-27,26,44,3,Real Madrid,0
+France,Group I,9,FW,Marcus Thuram,1997-08-06,28,33,3,Inter Milan,0
+France,Group I,10,FW,Kylian Mbappé,1998-12-20,27,96,56,Real Madrid,1
+France,Group I,11,FW,Michael Olise,2001-12-12,24,15,4,Bayern Munich,0
+France,Group I,12,FW,Bradley Barcola,2002-09-02,23,18,3,Paris Saint-Germain,0
+France,Group I,13,MF,N'Golo Kanté,1991-03-29,35,67,2,Fenerbahçe,0
+France,Group I,14,MF,Adrien Rabiot,1995-04-03,31,57,7,Milan,0
+France,Group I,15,DF,Ibrahima Konaté,1999-05-25,27,27,0,Liverpool,0
+France,Group I,16,GK,Mike Maignan,1995-07-03,30,38,0,Milan,0
+France,Group I,17,DF,William Saliba,2001-03-24,25,31,0,Arsenal,0
+France,Group I,18,MF,Warren Zaïre-Emery,2006-03-08,20,10,1,Paris Saint-Germain,0
+France,Group I,19,DF,Théo Hernandez,1997-10-06,28,42,2,Al-Hilal,0
+France,Group I,20,FW,Désiré Doué,2005-06-03,21,6,2,Paris Saint-Germain,0
+France,Group I,21,DF,Lucas Hernandez,1996-02-14,30,41,0,Paris Saint-Germain,0
+France,Group I,22,FW,Jean-Philippe Mateta,1997-06-28,28,3,2,Crystal Palace,0
+France,Group I,23,GK,Robin Risser,2004-12-02,21,0,0,Lens,0
+France,Group I,24,MF,Rayan Cherki,2003-08-17,22,5,1,Manchester City,0
+France,Group I,25,MF,Maghnes Akliouche,2002-02-25,24,7,1,Monaco,0
+France,Group I,26,DF,Maxence Lacroix,2000-04-06,26,2,0,Crystal Palace,0

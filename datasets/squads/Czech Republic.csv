@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Czech Republic,Group A,1,GK,Matěj Kovář,2000-05-17,26,19,0,PSV Eindhoven,0
+Czech Republic,Group A,2,DF,David Zima,2000-11-08,25,24,1,Slavia Prague,0
+Czech Republic,Group A,3,DF,Tomáš Holeš,1993-03-31,33,40,2,Slavia Prague,0
+Czech Republic,Group A,4,DF,Robin Hranáč,2000-01-29,26,13,1,TSG Hoffenheim,0
+Czech Republic,Group A,5,DF,Vladimír Coufal,1992-08-22,33,61,2,TSG Hoffenheim,0
+Czech Republic,Group A,6,DF,Štěpán Chaloupek,2003-03-08,23,4,0,Slavia Prague,0
+Czech Republic,Group A,7,DF,Ladislav Krejčí,1999-04-20,27,26,5,Wolverhampton Wanderers,1
+Czech Republic,Group A,8,MF,Vladimír Darida,1990-08-08,35,78,8,Hradec Králové,0
+Czech Republic,Group A,9,FW,Adam Hložek,2002-07-25,23,42,5,TSG Hoffenheim,0
+Czech Republic,Group A,10,FW,Patrik Schick,1996-01-24,30,52,25,Bayer Leverkusen,0
+Czech Republic,Group A,11,FW,Jan Kuchta,1997-01-08,29,31,3,Sparta Prague,0
+Czech Republic,Group A,12,MF,Lukáš Červ,2001-04-10,25,16,2,Viktoria Plzeň,0
+Czech Republic,Group A,13,FW,Mojmír Chytil,1999-04-29,27,22,6,Slavia Prague,0
+Czech Republic,Group A,14,DF,David Jurásek,2000-08-07,25,17,1,Slavia Prague,0
+Czech Republic,Group A,15,FW,Pavel Šulc,2000-12-29,25,20,5,Lyon,0
+Czech Republic,Group A,16,GK,Jindřich Staněk,1996-04-27,30,14,0,Slavia Prague,0
+Czech Republic,Group A,17,MF,Lukáš Provod,1996-10-23,29,37,3,Slavia Prague,0
+Czech Republic,Group A,18,MF,Michal Sadílek,1999-05-31,27,34,1,Slavia Prague,0
+Czech Republic,Group A,19,FW,Tomáš Chorý,1995-01-26,31,21,6,Slavia Prague,0
+Czech Republic,Group A,20,DF,Jaroslav Zelený,1992-08-20,33,22,0,Sparta Prague,0
+Czech Republic,Group A,21,DF,David Douděra,1998-05-31,28,16,2,Slavia Prague,0
+Czech Republic,Group A,22,MF,Tomáš Souček,1995-02-27,31,89,17,West Ham United,0
+Czech Republic,Group A,23,GK,Lukáš Horníček,2002-07-13,23,1,0,Braga,0
+Czech Republic,Group A,24,MF,Alexandr Sojka,2003-04-02,23,1,0,Viktoria Plzeň,0
+Czech Republic,Group A,25,MF,Hugo Sochůrek,2008-06-07,18,1,0,Sparta Prague,0
+Czech Republic,Group A,26,FW,Denis Višinský,2003-03-21,23,1,0,Viktoria Plzeň,0

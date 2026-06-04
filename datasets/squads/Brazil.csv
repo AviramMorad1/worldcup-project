@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Brazil,Group C,1,GK,Alisson,1992-10-02,33,77,0,Liverpool,0
+Brazil,Group C,2,DF,Wesley,2003-09-06,22,7,0,Roma,0
+Brazil,Group C,3,DF,Gabriel Magalhães,1997-12-19,28,17,1,Arsenal,0
+Brazil,Group C,4,DF,Marquinhos,1994-05-14,32,104,7,Paris Saint-Germain,1
+Brazil,Group C,5,MF,Casemiro,1992-02-23,34,85,9,Manchester United,0
+Brazil,Group C,6,DF,Alex Sandro,1991-01-26,35,44,2,Flamengo,0
+Brazil,Group C,7,FW,Vinícius Júnior,2000-07-12,25,48,9,Real Madrid,0
+Brazil,Group C,8,MF,Bruno Guimarães,1997-11-16,28,42,2,Newcastle United,0
+Brazil,Group C,9,FW,Matheus Cunha,1999-05-27,27,22,1,Manchester United,0
+Brazil,Group C,10,FW,Neymar,1992-02-05,34,128,79,Santos,0
+Brazil,Group C,11,FW,Raphinha,1996-12-14,29,38,11,Barcelona,0
+Brazil,Group C,12,GK,Weverton,1987-12-13,38,10,0,Grêmio,0
+Brazil,Group C,13,DF,Danilo Luiz,1991-07-15,34,69,1,Flamengo,0
+Brazil,Group C,14,DF,Bremer,1997-03-18,29,7,1,Juventus,0
+Brazil,Group C,15,DF,Léo Pereira,1996-01-31,30,3,0,Flamengo,0
+Brazil,Group C,16,DF,Douglas Santos,1994-03-22,32,6,0,Zenit Saint Petersburg,0
+Brazil,Group C,17,MF,Fabinho,1993-10-23,32,32,0,Al-Ittihad,0
+Brazil,Group C,18,MF,Danilo Santos,2001-04-29,25,3,2,Botafogo,0
+Brazil,Group C,19,FW,Endrick,2006-07-21,19,16,3,Lyon,0
+Brazil,Group C,20,MF,Lucas Paquetá,1997-08-27,28,62,13,Flamengo,0
+Brazil,Group C,21,FW,Luiz Henrique,2001-01-02,25,14,2,Zenit Saint Petersburg,0
+Brazil,Group C,22,FW,Gabriel Martinelli,2001-06-18,24,22,4,Arsenal,0
+Brazil,Group C,23,GK,Ederson,1993-08-17,32,32,0,Fenerbahçe,0
+Brazil,Group C,24,DF,Roger Ibañez,1998-11-23,27,6,0,Al-Ahli,0
+Brazil,Group C,25,FW,Igor Thiago,2001-06-26,24,3,2,Brentford,0
+Brazil,Group C,26,FW,Rayan,2006-08-03,19,2,1,Bournemouth,0

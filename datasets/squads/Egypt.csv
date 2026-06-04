@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Egypt,Group G,1,GK,Mohamed El Shenawy,1988-12-18,37,76,0,Al Ahly,0
+Egypt,Group G,2,DF,Yasser Ibrahim,1993-02-10,33,16,1,Al Ahly,0
+Egypt,Group G,3,DF,Mohamed Hany,1996-02-02,30,41,0,Al Ahly,0
+Egypt,Group G,4,DF,Hossam Abdelmaguid,2001-04-30,25,13,0,Zamalek,0
+Egypt,Group G,5,DF,Ramy Rabia,1993-05-20,33,44,5,Al Ain,0
+Egypt,Group G,6,DF,Mohamed Abdelmonem,1999-02-01,27,35,3,Nice,0
+Egypt,Group G,7,FW,Trézéguet,1994-10-01,31,95,23,Al Ahly,0
+Egypt,Group G,8,MF,Emam Ashour,1998-02-20,28,28,0,Al Ahly,0
+Egypt,Group G,9,FW,Hamza Abdelkarim,2008-01-01,18,1,0,Barcelona,0
+Egypt,Group G,10,FW,Mohamed Salah,1992-06-15,33,115,67,Liverpool,1
+Egypt,Group G,11,MF,Mostafa Ziko,1997-04-27,29,1,1,Pyramids,0
+Egypt,Group G,12,FW,Haissem Hassan,2002-02-08,24,3,0,Oviedo,0
+Egypt,Group G,13,DF,Ahmed Fatouh,1998-03-22,28,38,1,Zamalek,0
+Egypt,Group G,14,MF,Hamdy Fathy,1994-09-29,31,62,3,Al-Wakrah,0
+Egypt,Group G,15,DF,Karim Hafez,1996-03-12,30,8,0,Pyramids,0
+Egypt,Group G,16,GK,El Mahdy Soliman,1987-06-08,39,0,0,Zamalek,0
+Egypt,Group G,17,MF,Mohanad Lasheen,1996-05-29,30,22,0,Pyramids,0
+Egypt,Group G,18,MF,Nabil Emad,1996-04-06,30,12,0,Al-Najma,0
+Egypt,Group G,19,MF,Marwan Attia,1998-08-01,27,33,1,Al Ahly,0
+Egypt,Group G,20,FW,Ibrahim Adel,2001-04-23,25,23,3,Nordsjælland,0
+Egypt,Group G,21,MF,Mahmoud Saber,2001-07-30,24,15,1,ZED,0
+Egypt,Group G,22,FW,Omar Marmoush,1999-02-07,27,48,11,Manchester City,0
+Egypt,Group G,23,GK,Mostafa Shobeir,2000-05-15,26,8,0,Al Ahly,0
+Egypt,Group G,24,DF,Tarek Alaa,2002-01-05,24,2,0,ZED,0
+Egypt,Group G,25,FW,Zizo,1996-01-10,30,62,5,Al Ahly,0
+Egypt,Group G,26,GK,Mohamed Alaa,1999-01-01,27,0,0,El Gouna,0

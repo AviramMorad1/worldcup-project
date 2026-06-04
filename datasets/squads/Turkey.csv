@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Turkey,Group D,1,GK,Mert Günok,1989-03-01,37,37,0,Fenerbahçe,0
+Turkey,Group D,2,DF,Zeki Çelik,1997-02-17,29,60,3,Roma,0
+Turkey,Group D,3,DF,Merih Demiral,1998-03-05,28,61,6,Al-Ahli,0
+Turkey,Group D,4,DF,Çağlar Söyüncü,1996-05-23,30,60,2,Fenerbahçe,0
+Turkey,Group D,5,MF,Salih Özcan,1998-01-11,28,29,1,Borussia Dortmund,0
+Turkey,Group D,6,MF,Orkun Kökçü,2000-12-29,25,49,4,Beşiktaş,0
+Turkey,Group D,7,FW,Kerem Aktürkoğlu,1998-10-21,27,51,15,Fenerbahçe,0
+Turkey,Group D,8,FW,Arda Güler,2005-02-25,21,28,6,Real Madrid,0
+Turkey,Group D,9,FW,Deniz Gül,2004-07-02,21,7,2,Porto,0
+Turkey,Group D,10,MF,Hakan Çalhanoğlu,1994-02-08,32,104,22,Inter Milan,1
+Turkey,Group D,11,FW,Kenan Yıldız,2005-05-04,21,28,5,Juventus,0
+Turkey,Group D,12,GK,Altay Bayındır,1998-04-14,28,12,0,Manchester United,0
+Turkey,Group D,13,DF,Eren Elmalı,2000-07-07,25,22,0,Galatasaray,0
+Turkey,Group D,14,DF,Abdülkerim Bardakcı,1994-09-07,31,26,2,Galatasaray,0
+Turkey,Group D,15,DF,Ozan Kabak,2000-03-25,26,29,2,TSG Hoffenheim,0
+Turkey,Group D,16,MF,İsmail Yüksek,1999-01-26,27,31,1,Fenerbahçe,0
+Turkey,Group D,17,FW,İrfan Can Kahveci,1995-07-15,30,46,6,Kasımpaşa,0
+Turkey,Group D,18,DF,Mert Müldür,1999-04-03,27,44,3,Fenerbahçe,0
+Turkey,Group D,19,FW,Yunus Akgün,2000-07-07,25,18,3,Galatasaray,0
+Turkey,Group D,20,DF,Ferdi Kadıoğlu,1999-10-07,26,30,2,Brighton & Hove Albion,0
+Turkey,Group D,21,FW,Barış Alper Yılmaz,2000-05-23,26,34,3,Galatasaray,0
+Turkey,Group D,22,MF,Kaan Ayhan,1994-11-10,31,73,5,Galatasaray,0
+Turkey,Group D,23,GK,Uğurcan Çakır,1996-04-05,30,38,0,Galatasaray,0
+Turkey,Group D,24,FW,Oğuz Aydın,2000-10-27,25,10,0,Fenerbahçe,0
+Turkey,Group D,25,DF,Samet Akaydin,1994-03-13,32,19,1,Çaykur Rizespor,0
+Turkey,Group D,26,FW,Can Uzun,2005-11-11,20,5,1,Eintracht Frankfurt,0

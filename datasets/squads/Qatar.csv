@@ -1,0 +1,27 @@
+team,group,shirt_no,position,player_name,date_of_birth,age,caps,goals,club,is_captain
+Qatar,Group B,1,GK,Mahmud Abunada,2000-02-05,26,4,0,Al-Rayyan,0
+Qatar,Group B,2,DF,Pedro Miguel,1990-08-06,35,98,3,Al-Sadd,0
+Qatar,Group B,3,DF,Lucas Mendes,1990-07-03,35,25,1,Al-Wakrah,0
+Qatar,Group B,4,DF,Issa Laye,1997-12-22,28,3,0,Al-Arabi,0
+Qatar,Group B,5,DF,Jassem Gaber,2002-02-20,24,31,1,Al-Rayyan,0
+Qatar,Group B,6,MF,Abdulaziz Hatem,1990-01-01,36,117,11,Al-Rayyan,0
+Qatar,Group B,7,FW,Ahmed Alaaeldin,1993-01-31,33,67,9,Al-Rayyan,0
+Qatar,Group B,8,FW,Edmilson Junior,1994-08-19,31,15,0,Al-Duhail,0
+Qatar,Group B,9,FW,Mohammed Muntari,1993-12-20,32,67,16,Al-Gharafa,0
+Qatar,Group B,10,FW,Hassan Al-Haydos,1990-12-11,35,185,41,Al-Sadd,1
+Qatar,Group B,11,FW,Akram Afif,1996-11-18,29,124,39,Al-Sadd,0
+Qatar,Group B,12,MF,Karim Boudiaf,1990-09-16,35,117,5,Al-Duhail,0
+Qatar,Group B,13,DF,Ayoub Al-Oui,2005-03-11,21,5,0,Al-Gharafa,0
+Qatar,Group B,14,DF,Homam Ahmed,1999-08-25,26,67,3,Cultural Leonesa,0
+Qatar,Group B,15,FW,Yusuf Abdurisag,1999-08-06,26,38,3,Al-Wakrah,0
+Qatar,Group B,16,DF,Boualem Khoukhi,1990-07-09,35,115,20,Al-Sadd,0
+Qatar,Group B,17,MF,Ahmed Al-Ganehi,2000-09-22,25,13,1,Al-Gharafa,0
+Qatar,Group B,18,DF,Sultan Al-Brake,1996-04-07,30,16,0,Al-Duhail,0
+Qatar,Group B,19,FW,Almoez Ali,1996-08-19,29,115,55,Al-Duhail,0
+Qatar,Group B,20,MF,Ahmed Fathy,1993-01-25,33,47,0,Al-Arabi,0
+Qatar,Group B,21,GK,Salah Zakaria,1999-04-24,27,8,0,Al-Duhail,0
+Qatar,Group B,22,GK,Meshaal Barsham,1998-02-14,28,52,0,Al-Sadd,0
+Qatar,Group B,23,MF,Assim Madibo,1996-10-22,29,50,0,Al-Wakrah,0
+Qatar,Group B,24,FW,Tahsin Jamshid,2006-06-16,19,2,0,Al-Duhail,0
+Qatar,Group B,25,DF,Al-Hashmi Al-Hussain,2003-08-15,22,7,0,Al-Arabi,0
+Qatar,Group B,26,FW,Mohamed Manai,2002-10-25,23,9,0,Al-Shamal,0
