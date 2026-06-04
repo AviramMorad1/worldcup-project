@@ -1,0 +1,51 @@
+league_name,normalized_league_name,country,rank,points,continent_rank,class_mark,strength_weight,source,source_url,collected_at
+Premier League,premier league,England,1,8087.0,1,UEFA,1.0,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Brazil Série A,brazil serie a,Brazil,2,7735.5,1,CONMEBOL,0.9699,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Serie A,serie a,Italy,3,7510.0,2,UEFA,0.9505,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+La Liga,la liga,Spain,4,7400.5,3,UEFA,0.9411,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Bundesliga,bundesliga,Germany,5,6570.25,4,UEFA,0.8699,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Ligue 1,ligue 1,France,6,5562.25,5,UEFA,0.7835,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Primeira Liga,primeira liga,Portugal,7,5168.25,6,UEFA,0.7497,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Eredivisie,eredivisie,Netherlands,8,4841.5,7,UEFA,0.7217,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Argentine Primera División,argentine primera division,Argentina,9,4808.5,2,CONMEBOL,0.7189,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Belgian Pro League,belgian pro league,Belgium,10,4294.25,8,UEFA,0.6748,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Categoría Primera A,categoria primera a,Colombia,11,4180.0,3,CONMEBOL,0.665,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Süper Lig,super lig,Turkey,12,4029.25,9,UEFA,0.6521,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Primera División Paraguay,primera division paraguay,Paraguay,13,3553.0,4,CONMEBOL,0.6112,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Czech First League,czech first league,Czech Republic,14,3412.75,10,UEFA,0.5992,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Egyptian Premier League,egyptian premier league,Egypt,15,3374.25,1,CAF,0.5959,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Greek Super League,greek super league,Greece,16,3370.0,11,UEFA,0.5955,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+LigaPro,ligapro,Ecuador,17,3338.5,5,CONMEBOL,0.5928,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Scottish Premiership,scottish premiership,Scotland,18,3037.25,12,UEFA,0.567,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Uruguayan Primera División,uruguayan primera division,Uruguay,19,2976.0,6,CONMEBOL,0.5617,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Liga I,liga i,Roumania,20,2843.5,13,UEFA,0.5504,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Croatian HNL,croatian hnl,Croatia,21,2835.75,14,UEFA,0.5497,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Serbian SuperLiga,serbian superliga,Serbia,22,2781.5,15,UEFA,0.5451,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Austrian Bundesliga,austrian bundesliga,Austria,23,2744.0,16,UEFA,0.5419,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Danish Superliga,danish superliga,Denmark,24,2734.0,17,UEFA,0.541,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Liga MX,liga mx,Mexico,25,2708.5,1,CONCACAF,0.5388,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Israeli Premier League,israeli premier league,Israel,26,2634.0,18,UEFA,0.5324,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Saudi Pro League,saudi pro league,Saudi Arabia,27,2626.75,1,AFC,0.5318,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+J1 League,j1 league,Japan,28,2555.75,2,AFC,0.5257,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+K League 1,k league 1,Korea Republic,29,2512.0,3,AFC,0.522,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Cypriot First Division,cypriot first division,Cyprus,30,2510.0,19,UEFA,0.5218,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Botola Pro,botola pro,Morocco,31,2427.0,2,CAF,0.5147,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Ekstraklasa,ekstraklasa,Poland,32,2369.5,20,UEFA,0.5097,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Swiss Super League,swiss super league,Switzerland,33,2305.5,21,UEFA,0.5043,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Ukrainian Premier League,ukrainian premier league,Ukraine,34,2305.25,22,UEFA,0.5042,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Eliteserien,eliteserien,Norway,35,2217.5,23,UEFA,0.4967,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Chilean Primera División,chilean primera division,Chile,36,2215.25,7,CONMEBOL,0.4965,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Algerian Ligue 1,algerian ligue 1,Algeria,37,2143.75,3,CAF,0.4904,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Costa Rican Primera División,costa rican primera division,Costa Rica,38,2103.75,2,CONCACAF,0.487,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+First Professional League,first professional league,Bulgaria,39,2085.0,24,UEFA,0.4853,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Liga 1,liga 1,Peru,40,2014.5,8,CONMEBOL,0.4793,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Azerbaijan Premier League,azerbaijan premier league,Azerbaijan,41,1991.5,25,UEFA,0.4773,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Bolivian Primera División,bolivian primera division,Bolivia,42,1887.0,9,CONMEBOL,0.4684,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+NIFL Premiership,nifl premiership,Northern Ireland,43,1824.0,26,UEFA,0.463,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Allsvenskan,allsvenskan,Sweden,44,1793.5,27,UEFA,0.4604,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+NB I,nb i,Hungary,45,1785.5,28,UEFA,0.4597,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+PrvaLiga,prvaliga,Slovenia,46,1776.0,29,UEFA,0.4589,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+South African Premiership,south african premiership,South Africa,47,1770.75,4,CAF,0.4584,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+MLS,mls,USA,48,1707.75,3,CONCACAF,0.453,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+League of Ireland,league of ireland,Republic of Ireland,49,1685.0,30,UEFA,0.4511,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00
+Virslīga,virsliga,Latvia,50,1672.75,31,UEFA,0.45,global_rankings_csv,datasets\global_national_league_rankings.csv,2026-06-04T18:05:54.018402+00:00

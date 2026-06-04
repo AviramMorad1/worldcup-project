@@ -34,8 +34,22 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-DB_PATH      = "/app/data/worldcup.db"
-DATASETS_DIR = Path("/app/datasets")
+DB_PATH = "/app/data/worldcup.db"
+
+
+def _datasets_dir() -> Path:
+    """Docker mounts datasets at /app/datasets; locally use repo datasets/."""
+    docker = Path("/app/datasets")
+    if docker.is_dir():
+        return docker
+    here = Path(__file__).resolve().parent
+    for candidate in (here.parents[2] / "datasets", here.parents[1] / "datasets"):
+        if candidate.is_dir():
+            return candidate
+    return here.parent / "datasets"
+
+
+DATASETS_DIR = _datasets_dir()
 
 PLAYERS_CSV       = DATASETS_DIR / "players_data_2025_2026.csv"
 MANUAL_SQUADS_CSV = DATASETS_DIR / "national_team_squads.csv"
@@ -45,8 +59,34 @@ MANUAL_SQUADS_CSV = DATASETS_DIR / "national_team_squads.csv"
 # ---------------------------------------------------------------------------
 
 _SQUAD_ENABLED        = os.environ.get("SQUAD_FEATURES_ENABLED", "true").lower() == "true"
-_SQUAD_ADJ_WEIGHT     = float(os.environ.get("SQUAD_ADJUSTMENT_WEIGHT",    "0.20"))
-_MAX_SQUAD_ADJ        = float(os.environ.get("MAX_SQUAD_PROBA_ADJUSTMENT", "0.10"))
+_SQUAD_ADJ_ENABLED    = os.environ.get("SQUAD_ADJUSTMENT_ENABLED", "true").lower() == "true"
+_MAX_SQUAD_ADJ        = float(os.environ.get("MAX_SQUAD_PROBA_ADJUSTMENT", "0.08"))
+EXPECTED_SQUAD_SIZE   = 26
+TOP_LEAGUE_THRESHOLD  = 0.85
+
+# Squad CSV used for 2026 strength (not historical training)
+WC_PLAYERS_CSV_PATHS = [
+    DATASETS_DIR / "squads" / "wc_players_with_stats.csv",
+    DATASETS_DIR / "wc_players_with_stats.csv",
+    Path("/app/datasets/squads/wc_players_with_stats.csv"),
+    Path("/app/datasets/wc_players_with_stats.csv"),
+]
+
+ALL_SQUADS_CSV = DATASETS_DIR / "squads" / "all_squads.csv"
+
+# Map squad CSV team names → prediction model team names
+TEAM_CANONICAL: dict[str, str] = {
+    "Czech Republic": "Czechia",
+    "South Korea": "Korea Republic",
+    "Korea Republic": "Korea Republic",
+    "Ivory Coast": "Côte d'Ivoire",
+    "Cape Verde": "Cabo Verde",
+    "Turkey": "Türkiye",
+    "DR Congo": "Congo DR",
+    "Iran": "IR Iran",
+    "United States": "United States",
+    "USA": "United States",
+}
 _SQUAD_API_ENABLED    = os.environ.get("SQUAD_API_ENABLED", "true").lower() == "true"
 _SQUAD_SOURCE         = os.environ.get("SQUAD_SOURCE", "football-data")
 _SQUAD_SEASON         = os.environ.get("SQUAD_SEASON", "2026")
@@ -250,18 +290,8 @@ NATION_CODE_MAP: dict[str, str] = {
     "GUF": "French Guiana",
 }
 
-# ---------------------------------------------------------------------------
-# League quality weights
-# ---------------------------------------------------------------------------
-
-LEAGUE_WEIGHTS: dict[str, float] = {
-    "eng premier league": 1.00,
-    "es la liga":         0.95,
-    "de bundesliga":      0.90,
-    "it serie a":         0.90,
-    "fr ligue 1":         0.85,
-}
-DEFAULT_LEAGUE_WEIGHT = 0.50
+# League weights loaded from datasets/league_strengths.csv (see league_weights.py)
+from league_weights import lookup_league_weight, load_league_weights  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # DDL
@@ -269,37 +299,69 @@ DEFAULT_LEAGUE_WEIGHT = 0.50
 
 _DDL_PLAYER_STATS = """
     CREATE TABLE IF NOT EXISTS raw_player_stats (
-        id                   TEXT PRIMARY KEY,
-        player_name          TEXT,
+        id                     TEXT PRIMARY KEY,
+        player_name            TEXT,
         normalized_player_name TEXT,
-        nation_code          TEXT,
-        national_team        TEXT,
-        position             TEXT,
-        club                 TEXT,
-        league               TEXT,
-        age                  REAL,
-        appearances          REAL,
-        starts               REAL,
-        minutes              REAL,
-        nineties             REAL,
-        goals                REAL,
-        assists              REAL,
-        shots                REAL,
-        shots_on_target      REAL,
-        saves                REAL,
-        clean_sheets         REAL,
-        yellow_cards         REAL,
-        red_cards            REAL,
-        crosses              REAL,
-        interceptions        REAL,
-        tackles_won          REAL,
-        plus_minus           REAL,
-        points_per_match     REAL,
-        league_weight        REAL,
-        source_file          TEXT,
-        collected_at         TEXT
+        national_team          TEXT,
+        nation_code            TEXT,
+        position               TEXT,
+        club                   TEXT,
+        league                 TEXT,
+        normalized_league_name TEXT,
+        league_weight          REAL,
+        age                    REAL,
+        caps                   REAL,
+        goals_intl             REAL,
+        is_captain             INTEGER,
+        appearances            REAL,
+        starts                 REAL,
+        minutes                REAL,
+        nineties               REAL,
+        goals                  REAL,
+        assists                REAL,
+        goals_assists          REAL,
+        shots                  REAL,
+        shots_on_target        REAL,
+        saves                  REAL,
+        clean_sheets           REAL,
+        yellow_cards           REAL,
+        red_cards              REAL,
+        crosses                REAL,
+        interceptions          REAL,
+        tackles_won            REAL,
+        plus_minus             REAL,
+        points_per_match       REAL,
+        source_file            TEXT,
+        collected_at           TEXT
     )
 """
+
+_PLAYER_STATS_COLS = [
+    "id", "player_name", "normalized_player_name", "national_team", "nation_code",
+    "position", "club", "league", "normalized_league_name", "league_weight",
+    "age", "caps", "goals_intl", "is_captain",
+    "appearances", "starts", "minutes", "nineties",
+    "goals", "assists", "goals_assists",
+    "shots", "shots_on_target", "saves", "clean_sheets",
+    "yellow_cards", "red_cards", "crosses", "interceptions", "tackles_won",
+    "plus_minus", "points_per_match", "source_file", "collected_at",
+]
+
+_RAW_PLAYER_STATS_MIGRATIONS = [
+    ("national_team", "TEXT"),
+    ("normalized_league_name", "TEXT"),
+    ("league_weight", "REAL"),
+    ("caps", "REAL"),
+    ("goals_intl", "REAL"),
+    ("is_captain", "INTEGER"),
+    ("goals_assists", "REAL"),
+]
+
+_TEAM_TO_CODE: dict[str, str] = {}
+for _code, _team in NATION_CODE_MAP.items():
+    _TEAM_TO_CODE[_team] = _code
+    canon = TEAM_CANONICAL.get(_team, _team)
+    _TEAM_TO_CODE[canon] = _code
 
 _DDL_NATIONAL_SQUADS = """
     CREATE TABLE IF NOT EXISTS raw_national_squads (
@@ -342,29 +404,37 @@ _DDL_SQUAD_PLAYER_MATCHES = """
 
 _DDL_SQUAD_STRENGTH = """
     CREATE TABLE IF NOT EXISTS team_squad_strength (
-        team                   TEXT PRIMARY KEY,
-        squad_size             INTEGER,
-        matched_players        INTEGER,
-        unmatched_players      INTEGER,
-        match_coverage         REAL,
-        avg_age                REAL,
-        total_minutes          REAL,
-        total_goals            REAL,
-        total_assists          REAL,
-        total_g_a              REAL,
-        total_shots            REAL,
-        total_sot              REAL,
-        top_league_players     INTEGER,
-        regular_starters       INTEGER,
-        key_player_count       INTEGER,
-        injured_key_players    INTEGER,
-        attack_strength        REAL,
-        midfield_strength      REAL,
-        defense_strength       REAL,
-        goalkeeper_strength    REAL,
-        overall_squad_strength REAL,
-        data_quality_score     REAL,
-        updated_at             TEXT
+        team                      TEXT PRIMARY KEY,
+        players_with_stats        INTEGER,
+        expected_squad_size       INTEGER,
+        missing_players           INTEGER,
+        coverage_ratio            REAL,
+        coverage_tier             TEXT,
+        data_quality_score        REAL,
+        avg_age                     REAL,
+        total_minutes             REAL,
+        total_starts              REAL,
+        regular_starters          INTEGER,
+        total_goals               REAL,
+        total_assists             REAL,
+        total_goals_assists       REAL,
+        total_shots               REAL,
+        total_sot                 REAL,
+        avg_league_weight         REAL,
+        top_league_players        INTEGER,
+        weighted_minutes_score    REAL,
+        league_quality_score      REAL,
+        production_score          REAL,
+        international_experience_score REAL,
+        depth_score               REAL,
+        attack_strength           REAL,
+        midfield_strength         REAL,
+        defense_strength          REAL,
+        goalkeeper_strength       REAL,
+        computed_squad_strength   REAL,
+        fifa_fallback_strength    REAL,
+        final_squad_strength      REAL,
+        updated_at                TEXT
     )
 """
 
@@ -400,11 +470,91 @@ def parse_nation_code(nation_str: str) -> tuple[str, str]:
     return (code, team)
 
 
+def canonical_team(name: str) -> str:
+    """Map squad CSV / stats team name to prediction team name."""
+    if not isinstance(name, str):
+        return ""
+    s = name.strip()
+    return TEAM_CANONICAL.get(s, s)
+
+
 def league_weight(comp: str) -> float:
-    """Return quality weight for a competition string."""
-    if not isinstance(comp, str):
-        return DEFAULT_LEAGUE_WEIGHT
-    return LEAGUE_WEIGHTS.get(comp.strip().lower(), DEFAULT_LEAGUE_WEIGHT)
+    """Return quality weight for a league/competition string."""
+    _, w = lookup_league_weight(comp or "")
+    return w
+
+
+def _coverage_tier(n_with_stats: int) -> tuple[str, float, float]:
+    """Return (tier_label, coverage_weight, data_quality_score)."""
+    if n_with_stats >= 20:
+        return ("High", 1.00, 1.00)
+    if n_with_stats >= 13:
+        return ("Medium", 0.70, 0.70)
+    if n_with_stats >= 6:
+        return ("Low", 0.40, 0.40)
+    return ("Very Low", 0.20, 0.20)
+
+
+def _fifa_fallback_from_rank(rank: float) -> float:
+    """FIFA rank → fallback strength 0–100 (missing rank → 45)."""
+    if rank is None or rank >= 150:
+        return 45.0
+    r = int(rank)
+    if r <= 10:
+        return 78.0
+    if r <= 25:
+        return 70.0
+    if r <= 50:
+        return 62.0
+    if r <= 75:
+        return 54.0
+    if r <= 100:
+        return 47.0
+    return 40.0
+
+
+def _load_fifa_ranks() -> dict[str, float]:
+    """Latest FIFA rank per team (prefers year 2026)."""
+    ranks: dict[str, float] = {}
+    try:
+        conn = _open_db()
+        try:
+            df = pd.read_sql_query(
+                "SELECT team, year, rank FROM raw_rankings ORDER BY year DESC",
+                conn,
+            )
+        finally:
+            conn.close()
+        if df.empty:
+            return ranks
+        for team in df["team"].unique():
+            sub = df[df["team"] == team]
+            row = sub[sub["year"] == 2026]
+            if row.empty:
+                row = sub.iloc[[0]]
+            ranks[team] = float(row.iloc[0]["rank"])
+            canon = canonical_team(team)
+            if canon:
+                ranks[canon] = ranks[team]
+    except Exception as exc:
+        logger.warning("Could not load FIFA ranks for fallback: %s", exc)
+    return ranks
+
+
+def _expected_squad_sizes() -> dict[str, int]:
+    """Expected roster size per team from all_squads.csv, default 26."""
+    sizes: dict[str, int] = {}
+    for path in (ALL_SQUADS_CSV, Path("/app/datasets/squads/all_squads.csv")):
+        if path.exists():
+            try:
+                df = pd.read_csv(path)
+                for team, cnt in df.groupby("team").size().items():
+                    canon = canonical_team(str(team))
+                    sizes[canon] = int(cnt)
+            except Exception:
+                pass
+            break
+    return sizes
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +591,56 @@ def _safe_add_col(conn: sqlite3.Connection, table: str, col: str, col_type: str)
         logger.info("squad_features: added column '%s' to %s.", col, table)
 
 
+_TEAM_SQUAD_MIGRATIONS = [
+    ("players_with_stats", "INTEGER"),
+    ("expected_squad_size", "INTEGER"),
+    ("missing_players", "INTEGER"),
+    ("coverage_ratio", "REAL"),
+    ("coverage_tier", "TEXT"),
+    ("total_starts", "REAL"),
+    ("total_goals_assists", "REAL"),
+    ("avg_league_weight", "REAL"),
+    ("weighted_minutes_score", "REAL"),
+    ("league_quality_score", "REAL"),
+    ("production_score", "REAL"),
+    ("international_experience_score", "REAL"),
+    ("depth_score", "REAL"),
+    ("computed_squad_strength", "REAL"),
+    ("fifa_fallback_strength", "REAL"),
+    ("final_squad_strength", "REAL"),
+]
+
+
+def _migrate_team_squad_strength(conn: sqlite3.Connection) -> None:
+    """Upgrade legacy team_squad_strength schema without dropping rows."""
+    if not _table_exists(conn, "team_squad_strength"):
+        return
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(team_squad_strength)")}
+    for col, ctype in _TEAM_SQUAD_MIGRATIONS:
+        if col not in existing:
+            _safe_add_col(conn, "team_squad_strength", col, ctype)
+    if "overall_squad_strength" in existing and "final_squad_strength" in existing:
+        conn.execute(
+            """
+            UPDATE team_squad_strength
+            SET final_squad_strength = COALESCE(final_squad_strength, overall_squad_strength),
+                computed_squad_strength = COALESCE(
+                    computed_squad_strength, overall_squad_strength
+                ),
+                players_with_stats = COALESCE(players_with_stats, matched_players, squad_size)
+            WHERE final_squad_strength IS NULL OR players_with_stats IS NULL
+            """
+        )
+        conn.commit()
+
+
+def _migrate_raw_player_stats(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "raw_player_stats"):
+        return
+    for col, ctype in _RAW_PLAYER_STATS_MIGRATIONS:
+        _safe_add_col(conn, "raw_player_stats", col, ctype)
+
+
 def create_squad_tables() -> None:
     """Create all squad tables if they do not already exist."""
     conn = _open_db()
@@ -450,8 +650,8 @@ def create_squad_tables() -> None:
         conn.execute(_DDL_SQUAD_PLAYER_MATCHES)
         conn.execute(_DDL_SQUAD_STRENGTH)
         conn.commit()
-
-        # Migrate match_predictions to include squad columns
+        _migrate_raw_player_stats(conn)
+        _migrate_team_squad_strength(conn)
         _migrate_match_predictions(conn)
     finally:
         conn.close()
@@ -463,12 +663,27 @@ def _migrate_match_predictions(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "match_predictions"):
         return
     new_cols = [
-        ("squad_strength_a",        "REAL"),
-        ("squad_strength_b",        "REAL"),
-        ("squad_strength_diff",     "REAL"),
-        ("squad_adjustment_applied","INTEGER"),
-        ("raw_model_confidence",    "REAL"),
-        ("squad_adjusted_confidence","REAL"),
+        ("base_team_a_proba", "REAL"),
+        ("base_draw_proba", "REAL"),
+        ("base_team_b_proba", "REAL"),
+        ("adjusted_team_a_proba", "REAL"),
+        ("adjusted_draw_proba", "REAL"),
+        ("adjusted_team_b_proba", "REAL"),
+        ("squad_strength_a", "REAL"),
+        ("squad_strength_b", "REAL"),
+        ("squad_strength_diff", "REAL"),
+        ("squad_coverage_a", "REAL"),
+        ("squad_coverage_b", "REAL"),
+        ("squad_coverage_tier_a", "TEXT"),
+        ("squad_coverage_tier_b", "TEXT"),
+        ("squad_adjustment_amount", "REAL"),
+        ("squad_adjustment_applied", "INTEGER"),
+        ("raw_model_confidence", "REAL"),
+        ("adjusted_confidence", "REAL"),
+        ("squad_adjusted_confidence", "REAL"),
+        ("confidence_band", "TEXT"),
+        ("key_factors", "TEXT"),
+        ("explanation", "TEXT"),
     ]
     for col, ctype in new_cols:
         _safe_add_col(conn, "match_predictions", col, ctype)
@@ -493,6 +708,104 @@ def load_player_stats_from_db() -> pd.DataFrame:
     except Exception as exc:
         logger.warning("Could not load raw_player_stats from DB: %s", exc)
         return pd.DataFrame()
+
+
+def _float_val(row, *cols: str) -> float | None:
+    for col in cols:
+        v = row.get(col)
+        if v is None or str(v).strip() in ("", "nan", "None"):
+            continue
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def load_wc_player_stats_dataframe() -> pd.DataFrame:
+    """Load datasets/squads/wc_players_with_stats.csv (same format as collector)."""
+    load_league_weights()
+    path = None
+    for candidate in WC_PLAYERS_CSV_PATHS:
+        if candidate.exists():
+            path = candidate
+            break
+    if path is None:
+        return pd.DataFrame()
+
+    try:
+        raw = pd.read_csv(path)
+    except Exception as exc:
+        logger.warning("Failed to read WC player stats %s: %s", path, exc)
+        return pd.DataFrame()
+
+    raw.columns = [c.strip() for c in raw.columns]
+    now = datetime.now(timezone.utc).isoformat()
+    records: list[dict] = []
+
+    for idx, row in raw.iterrows():
+        player = str(row.get("player_name", row.get("Player", ""))).strip()
+        if not player:
+            continue
+        team = canonical_team(str(row.get("team", row.get("national_team", ""))).strip())
+        if not team:
+            _, team = parse_nation_code(str(row.get("Nation", "")))
+            team = canonical_team(team)
+        code = _TEAM_TO_CODE.get(team, "")
+        league = str(row.get("stats_league", row.get("league", row.get("Comp", "")))).strip()
+        norm_league, lw = lookup_league_weight(league)
+        goals = _float_val(row, "goals_stats", "goals", "Gls") or 0.0
+        ast = _float_val(row, "assists", "Ast") or 0.0
+        ga = _float_val(row, "G+A", "goals_assists")
+        if ga is None:
+            ga = goals + ast
+        cap = row.get("is_captain", 0)
+        try:
+            is_cap = int(float(cap)) if cap not in ("", None) else 0
+        except (TypeError, ValueError):
+            is_cap = 0
+
+        records.append({
+            "id": f"wc_{normalise_name(team)}_{normalise_name(player)}_{idx}",
+            "player_name": player,
+            "normalized_player_name": normalise_name(player),
+            "national_team": team,
+            "nation_code": code,
+            "position": str(row.get("stats_position", row.get("position_wc", ""))).strip(),
+            "club": str(row.get("club_wc", row.get("club", ""))).strip(),
+            "league": league,
+            "normalized_league_name": norm_league,
+            "league_weight": lw,
+            "age": _float_val(row, "age_wc", "age", "Age"),
+            "caps": _float_val(row, "caps"),
+            "goals_intl": _float_val(row, "goals_intl"),
+            "is_captain": is_cap,
+            "appearances": _float_val(row, "matches_played", "appearances", "MP"),
+            "starts": _float_val(row, "starts", "Starts"),
+            "minutes": _float_val(row, "minutes", "Min"),
+            "nineties": _float_val(row, "90s", "nineties"),
+            "goals": goals,
+            "assists": ast,
+            "goals_assists": ga,
+            "shots": _float_val(row, "shots", "Sh"),
+            "shots_on_target": _float_val(row, "shots_on_target", "SoT"),
+            "saves": _float_val(row, "saves", "Saves"),
+            "clean_sheets": _float_val(row, "clean_sheets", "CS"),
+            "yellow_cards": _float_val(row, "yellow_cards", "CrdY"),
+            "red_cards": _float_val(row, "red_cards", "CrdR"),
+            "crosses": _float_val(row, "crosses", "Crs"),
+            "interceptions": _float_val(row, "interceptions", "Int"),
+            "tackles_won": _float_val(row, "tackles_won", "TklW"),
+            "plus_minus": _float_val(row, "plus_minus", "+/-"),
+            "points_per_match": _float_val(row, "points_per_match", "PPM"),
+            "source_file": path.name,
+            "collected_at": now,
+        })
+
+    if not records:
+        return pd.DataFrame()
+    logger.info("WC player stats CSV: %d players from %s.", len(records), path.name)
+    return pd.DataFrame(records)
 
 
 def load_player_stats_csv(csv_path: Path | None = None) -> pd.DataFrame:
@@ -675,43 +988,45 @@ def fetch_squads_from_api() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def save_player_stats_to_db(df: pd.DataFrame) -> int:
-    """Insert player stats rows into raw_player_stats, skipping existing IDs."""
+def save_player_stats_to_db(df: pd.DataFrame, replace_all: bool = False) -> int:
+    """Insert player stats into raw_player_stats."""
     if df.empty:
         return 0
 
+    for col in _PLAYER_STATS_COLS:
+        if col not in df.columns:
+            df[col] = None
+
     conn = _open_db()
     try:
-        existing_ids = {
-            r[0] for r in conn.execute("SELECT id FROM raw_player_stats").fetchall()
-        }
-        new_rows = df[~df["id"].isin(existing_ids)]
-        if new_rows.empty:
-            logger.info("raw_player_stats: all rows already present.")
-            return 0
+        _migrate_raw_player_stats(conn)
+        if replace_all:
+            conn.execute("DELETE FROM raw_player_stats")
+            conn.commit()
+            to_write = df
+        else:
+            existing_ids = {
+                r[0] for r in conn.execute("SELECT id FROM raw_player_stats").fetchall()
+            }
+            to_write = df[~df["id"].isin(existing_ids)]
+            if to_write.empty:
+                logger.info("raw_player_stats: all rows already present.")
+                return 0
 
-        cols = [
-            "id", "player_name", "normalized_player_name",
-            "nation_code", "national_team", "position",
-            "club", "league", "age", "appearances", "starts",
-            "minutes", "nineties", "goals", "assists",
-            "shots", "shots_on_target", "saves", "clean_sheets",
-            "yellow_cards", "red_cards", "crosses",
-            "interceptions", "tackles_won", "plus_minus",
-            "points_per_match", "league_weight",
-            "source_file", "collected_at",
-        ]
         rows = [
-            tuple(None if (str(r[c]) in ("nan", "None", "")) else r[c] for c in cols)
-            for _, r in new_rows[cols].iterrows()
+            tuple(
+                None if (str(r[c]) in ("nan", "None", "")) else r[c]
+                for c in _PLAYER_STATS_COLS
+            )
+            for _, r in to_write[_PLAYER_STATS_COLS].iterrows()
         ]
         conn.executemany(
-            f"INSERT OR IGNORE INTO raw_player_stats ({', '.join(cols)}) "
-            f"VALUES ({', '.join('?' * len(cols))})",
+            f"INSERT OR REPLACE INTO raw_player_stats ({', '.join(_PLAYER_STATS_COLS)}) "
+            f"VALUES ({', '.join('?' * len(_PLAYER_STATS_COLS))})",
             rows,
         )
         conn.commit()
-        logger.info("raw_player_stats: inserted %d new rows.", len(rows))
+        logger.info("raw_player_stats: saved %d rows (replace_all=%s).", len(rows), replace_all)
         return len(rows)
     finally:
         conn.close()
@@ -883,61 +1198,71 @@ def match_squad_players_to_stats() -> int:
 # ---------------------------------------------------------------------------
 
 # Scoring component weights (must sum to 1.0)
-_W_PLAYING_TIME  = 0.30
-_W_POSITIONAL    = 0.25
-_W_LEAGUE        = 0.20
-_W_PRODUCTION    = 0.15
-_W_DEPTH         = 0.10
+_W_PLAYING_TIME = 0.35
+_W_LEAGUE       = 0.25
+_W_POSITIONAL   = 0.20
+_W_INTL         = 0.10
+_W_DEPTH        = 0.10
+
+_BENCH_MINUTES = EXPECTED_SQUAD_SIZE * 900  # 26 × 900 min
+
+
+def _clamp100(x: float) -> float:
+    return float(max(0.0, min(100.0, x)))
 
 
 def _positional_score(players_df: pd.DataFrame) -> tuple[float, float, float, float]:
     """Return (attack, midfield, defense, goalkeeper) strength scores 0–100."""
     def _pos_subset(df: pd.DataFrame, patterns: list[str]) -> pd.DataFrame:
-        mask = df["position"].str.upper().str.contains("|".join(patterns), na=False)
+        pos = df["position"].fillna("").astype(str).str.upper()
+        mask = pos.str.contains("|".join(patterns), na=False)
         return df[mask]
 
-    att = _pos_subset(players_df, ["FW"])
-    mid = _pos_subset(players_df, ["MF"])
-    dfe = _pos_subset(players_df, ["DF"])
+    att = _pos_subset(players_df, ["FW", "AM", "W"])
+    mid = _pos_subset(players_df, ["MF", "CM", "DM"])
+    dfe = _pos_subset(players_df, ["DF", "CB", "FB"])
     gkp = _pos_subset(players_df, ["GK"])
 
     def _attack_score(df: pd.DataFrame) -> float:
         if df.empty:
-            return 0.0
-        g_a = (df["goals"].sum() + df["assists"].sum())
-        sot = df["shots_on_target"].sum()
-        mins = max(df["minutes"].sum(), 1)
-        raw = (g_a * 4 + sot * 0.5) / (mins / 90) * 10
-        return min(100.0, raw)
+            return 50.0
+        g_a = float(df["goals"].sum() + df["assists"].sum())
+        sot = float(df["shots_on_target"].sum())
+        sh = float(df["shots"].sum())
+        mins = max(float(df["minutes"].sum()), 1.0)
+        raw = (g_a * 5.0 + sot * 0.8 + sh * 0.2) / (mins / 90.0) * 8.0
+        return _clamp100(raw)
 
     def _mid_score(df: pd.DataFrame) -> float:
         if df.empty:
-            return 0.0
-        ast  = df["assists"].sum()
-        tkl  = df["tackles_won"].sum()
-        intr = df["interceptions"].sum()
-        mins = max(df["minutes"].sum(), 1)
-        raw = (ast * 3 + tkl * 0.5 + intr * 0.5) / (mins / 90) * 10
-        return min(100.0, raw)
+            return 50.0
+        ast = float(df["assists"].sum())
+        crs = float(df.get("crosses", pd.Series(0)).sum())
+        tkl = float(df["tackles_won"].sum())
+        intr = float(df["interceptions"].sum())
+        mins = max(float(df["minutes"].sum()), 1.0)
+        raw = (ast * 4.0 + crs * 0.3 + tkl * 0.6 + intr * 0.6) / (mins / 90.0) * 8.0
+        return _clamp100(raw)
 
     def _def_score(df: pd.DataFrame) -> float:
         if df.empty:
-            return 0.0
-        tkl  = df["tackles_won"].sum()
-        intr = df["interceptions"].sum()
-        pm   = df["plus_minus"].sum()
-        mins = max(df["minutes"].sum(), 1)
-        raw = (tkl * 0.5 + intr * 0.5 + max(0, pm) * 0.2) / (mins / 90) * 10
-        return min(100.0, raw)
+            return 50.0
+        tkl = float(df["tackles_won"].sum())
+        intr = float(df["interceptions"].sum())
+        pm = float(df["plus_minus"].sum())
+        cs = float(df["clean_sheets"].sum())
+        mins = max(float(df["minutes"].sum()), 1.0)
+        raw = (tkl * 0.6 + intr * 0.6 + max(0.0, pm) * 0.3 + cs * 4.0) / (mins / 90.0) * 8.0
+        return _clamp100(raw)
 
     def _gk_score(df: pd.DataFrame) -> float:
         if df.empty:
-            return 0.0
-        sv   = df["saves"].sum()
-        cs   = df["clean_sheets"].sum()
-        mins = max(df["minutes"].sum(), 1)
-        raw = (sv * 0.5 + cs * 5) / (mins / 90) * 10
-        return min(100.0, raw)
+            return 50.0
+        sv = float(df["saves"].sum())
+        cs = float(df["clean_sheets"].sum())
+        mins = max(float(df["minutes"].sum()), 1.0)
+        raw = (sv * 0.4 + cs * 6.0) / (mins / 90.0) * 8.0
+        return _clamp100(raw)
 
     return (
         _attack_score(att),
@@ -947,149 +1272,181 @@ def _positional_score(players_df: pd.DataFrame) -> tuple[float, float, float, fl
     )
 
 
+def _international_experience_score(df: pd.DataFrame) -> float:
+    """Caps, international goals, captaincy → 0–100 (neutral 50 if missing)."""
+    if "caps" not in df.columns and "goals_intl" not in df.columns:
+        logger.debug("International columns missing — neutral intl score 50.")
+        return 50.0
+    caps = pd.to_numeric(df.get("caps", 0), errors="coerce").fillna(0)
+    gintl = pd.to_numeric(df.get("goals_intl", 0), errors="coerce").fillna(0)
+    captain = pd.to_numeric(df.get("is_captain", 0), errors="coerce").fillna(0)
+    cap_score = min(100.0, float(caps.mean()) * 1.2) if caps.sum() > 0 else 50.0
+    goal_score = min(100.0, float(gintl.sum()) * 3.0)
+    cap_bonus = min(15.0, float(captain.sum()) * 5.0)
+    return _clamp100(0.6 * cap_score + 0.3 * goal_score + 0.1 * (50.0 + cap_bonus))
+
+
 def compute_team_squad_strength() -> int:
     """
-    Compute team_squad_strength for every national team represented in raw_player_stats.
+    Compute team_squad_strength from raw_player_stats (2026 adjustment only).
 
-    Uses the nation_code ↔ national_team mapping populated during CSV loading.
-    Also uses raw_national_squads (if populated) to filter to confirmed squad members.
-
+    Missing squad members are uncertainty, not zero strength.
     Returns number of teams processed.
     """
+    load_league_weights()
     stats_df = load_player_stats_from_db()
     if stats_df.empty:
         logger.warning(
             "raw_player_stats is empty — cannot compute squad strength. "
-            "Ensure players_data_2025_2026.csv is in datasets/."
+            "Run collector with wc_players_with_stats.csv."
         )
         return 0
 
-    # Filter to players with a known national team
-    stats_df = stats_df[stats_df["national_team"].notna() & (stats_df["national_team"] != "")]
+    stats_df = stats_df[
+        stats_df["national_team"].notna() & (stats_df["national_team"].astype(str).str.strip() != "")
+    ].copy()
+    stats_df["team_key"] = stats_df["national_team"].map(
+        lambda t: canonical_team(str(t))
+    )
 
-    # Check if we have squad filtering from raw_national_squads
-    conn = _open_db()
-    try:
-        squad_teams: set[str] = set()
-        if _table_exists(conn, "raw_national_squads"):
-            squad_count = conn.execute(
-                "SELECT COUNT(*) FROM raw_national_squads"
-            ).fetchone()[0]
-            if squad_count > 0:
-                rows = conn.execute(
-                    "SELECT DISTINCT team FROM raw_national_squads"
-                ).fetchall()
-                squad_teams = {r[0] for r in rows}
-    finally:
-        conn.close()
+    expected_sizes = _expected_squad_sizes()
+    fifa_ranks = _load_fifa_ranks()
+    now = datetime.now(timezone.utc).isoformat()
+    results: list[tuple] = []
+    tier_counts: dict[str, int] = {}
 
-    now     = datetime.now(timezone.utc).isoformat()
-    teams   = stats_df["national_team"].unique()
-    results = []
-
-    for team in teams:
-        team_players = stats_df[stats_df["national_team"] == team].copy()
-        if team_players.empty:
+    for team in stats_df["team_key"].unique():
+        if not team:
             continue
+        tp = stats_df[stats_df["team_key"] == team].copy()
+        num_cols = [
+            "goals", "assists", "goals_assists", "shots", "shots_on_target",
+            "saves", "clean_sheets", "minutes", "starts", "appearances",
+            "tackles_won", "interceptions", "plus_minus", "league_weight", "age",
+            "crosses", "caps", "goals_intl", "is_captain",
+        ]
+        for col in num_cols:
+            if col in tp.columns:
+                tp[col] = pd.to_numeric(tp[col], errors="coerce").fillna(0)
+            else:
+                tp[col] = 0.0
+        if "goals_assists" in tp.columns and tp["goals_assists"].sum() == 0:
+            tp["goals_assists"] = tp["goals"] + tp["assists"]
 
-        # Coerce numeric columns
-        for col in ["goals", "assists", "shots", "shots_on_target", "saves",
-                    "clean_sheets", "minutes", "starts", "tackles_won",
-                    "interceptions", "plus_minus", "league_weight", "age"]:
-            team_players[col] = pd.to_numeric(team_players.get(col, 0), errors="coerce").fillna(0)
+        players_with_stats = len(tp)
+        expected = expected_sizes.get(team, EXPECTED_SQUAD_SIZE)
+        missing_players = max(0, expected - players_with_stats)
+        coverage_ratio = min(players_with_stats / float(expected), 1.0)
+        tier, cov_weight, dq_score = _coverage_tier(players_with_stats)
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
 
-        squad_size     = len(team_players)
-        matched        = squad_size    # all players from CSV are "matched" (nation code)
-        unmatched      = 0
-        match_coverage = 1.0
+        avg_age = float(tp["age"][tp["age"] > 0].mean() or 0)
+        total_minutes = float(tp["minutes"].sum())
+        total_starts = float(tp["starts"].sum())
+        regular_starters = int((tp["starts"] >= 10).sum())
+        total_goals = float(tp["goals"].sum())
+        total_assists = float(tp["assists"].sum())
+        total_ga = float(tp["goals_assists"].sum())
+        total_shots = float(tp["shots"].sum())
+        total_sot = float(tp["shots_on_target"].sum())
 
-        avg_age         = float(team_players["age"][team_players["age"] > 0].mean() or 0)
-        total_minutes   = float(team_players["minutes"].sum())
-        total_goals     = float(team_players["goals"].sum())
-        total_assists   = float(team_players["assists"].sum())
-        total_g_a       = total_goals + total_assists
-        total_shots     = float(team_players["shots"].sum())
-        total_sot       = float(team_players["shots_on_target"].sum())
-        regular_starters = int((team_players["starts"] >= 10).sum())
+        total_min = max(total_minutes, 1.0)
+        avg_lw = float((tp["league_weight"] * tp["minutes"]).sum() / total_min)
+        top_league_players = int((tp["league_weight"] >= TOP_LEAGUE_THRESHOLD).sum())
+        weighted_minutes_score = _clamp100(total_minutes / _BENCH_MINUTES * 100.0)
+        league_quality_score = _clamp100(avg_lw * 100.0 + min(20.0, top_league_players * 2.0))
 
-        top_league_players = int(
-            (team_players["league_weight"] >= 0.90).sum()
+        att_s, mid_s, def_s, gk_s = _positional_score(tp)
+        production_score = _clamp100((att_s + mid_s + def_s + gk_s) / 4.0)
+        position_balance = production_score
+        intl_score = _international_experience_score(tp)
+        depth_score = _clamp100(coverage_ratio * 100.0)
+        playing_time_score = _clamp100(
+            0.7 * weighted_minutes_score + 0.3 * min(100.0, regular_starters / 15.0 * 100.0)
         )
-        key_player_count = 0
-        injured_key_players = 0
 
-        # Positional strength
-        att_s, mid_s, def_s, gk_s = _positional_score(team_players)
-        positional_avg = (att_s + mid_s + def_s + gk_s) / 4.0
-
-        # League strength (weighted average by minutes)
-        total_min = max(total_minutes, 1)
-        league_str = float(
-            (team_players["league_weight"] * team_players["minutes"]).sum() / total_min
-        ) * 100
-
-        # Playing time component (normalize by 26-player × 90-min × 30-game benchmark)
-        benchmark_minutes = 26 * 90 * 30  # ~70,200
-        pt_score = min(100.0, total_minutes / benchmark_minutes * 100)
-
-        # Production component
-        benchmark_ga = 30.0
-        production_score = min(100.0, total_g_a / benchmark_ga * 100)
-
-        # Depth: squad_size / 26 typical squad
-        depth_score = min(100.0, squad_size / 26.0 * 100)
-
-        # Overall weighted score
-        overall = (
-            pt_score          * _W_PLAYING_TIME
-            + positional_avg  * _W_POSITIONAL
-            + league_str      * _W_LEAGUE
-            + production_score * _W_PRODUCTION
-            + depth_score     * _W_DEPTH
+        computed = (
+            playing_time_score * _W_PLAYING_TIME
+            + league_quality_score * _W_LEAGUE
+            + position_balance * _W_POSITIONAL
+            + intl_score * _W_INTL
+            + depth_score * _W_DEPTH
         )
-        overall = min(100.0, max(0.0, overall))
+        computed = _clamp100(computed)
 
-        # Data quality: penalise if very few players found
-        dq = min(1.0, squad_size / 15.0)   # 15+ players = full quality
-        data_quality_score = float(dq * 100)
+        rank = fifa_ranks.get(team)
+        fifa_fb = 45.0 if rank is None else _fifa_fallback_from_rank(rank)
+        final_strength = _clamp100(
+            cov_weight * computed + (1.0 - cov_weight) * fifa_fb
+        )
 
         results.append((
-            team, squad_size, matched, unmatched, match_coverage,
-            round(avg_age, 1), round(total_minutes, 0),
-            round(total_goals, 0), round(total_assists, 0), round(total_g_a, 0),
-            round(total_shots, 0), round(total_sot, 0),
-            top_league_players, regular_starters,
-            key_player_count, injured_key_players,
-            round(att_s, 2), round(mid_s, 2), round(def_s, 2), round(gk_s, 2),
-            round(overall, 2), round(data_quality_score, 2), now,
+            team,
+            players_with_stats,
+            expected,
+            missing_players,
+            round(coverage_ratio, 4),
+            tier,
+            round(dq_score, 4),
+            round(avg_age, 1),
+            round(total_minutes, 0),
+            round(total_starts, 0),
+            regular_starters,
+            round(total_goals, 0),
+            round(total_assists, 0),
+            round(total_ga, 0),
+            round(total_shots, 0),
+            round(total_sot, 0),
+            round(avg_lw, 4),
+            top_league_players,
+            round(weighted_minutes_score, 2),
+            round(league_quality_score, 2),
+            round(production_score, 2),
+            round(intl_score, 2),
+            round(depth_score, 2),
+            round(att_s, 2),
+            round(mid_s, 2),
+            round(def_s, 2),
+            round(gk_s, 2),
+            round(computed, 2),
+            round(fifa_fb, 2),
+            round(final_strength, 2),
+            now,
         ))
 
     conn = _open_db()
     try:
         conn.executemany(
-            "INSERT OR REPLACE INTO team_squad_strength "
-            "(team, squad_size, matched_players, unmatched_players, match_coverage, "
-            " avg_age, total_minutes, total_goals, total_assists, total_g_a, "
-            " total_shots, total_sot, top_league_players, regular_starters, "
-            " key_player_count, injured_key_players, attack_strength, "
-            " midfield_strength, defense_strength, goalkeeper_strength, "
-            " overall_squad_strength, data_quality_score, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO team_squad_strength ("
+            "team, players_with_stats, expected_squad_size, missing_players, "
+            "coverage_ratio, coverage_tier, data_quality_score, avg_age, "
+            "total_minutes, total_starts, regular_starters, total_goals, "
+            "total_assists, total_goals_assists, total_shots, total_sot, "
+            "avg_league_weight, top_league_players, weighted_minutes_score, "
+            "league_quality_score, production_score, international_experience_score, "
+            "depth_score, attack_strength, midfield_strength, defense_strength, "
+            "goalkeeper_strength, computed_squad_strength, fifa_fallback_strength, "
+            "final_squad_strength, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             results,
         )
         conn.commit()
     finally:
         conn.close()
 
+    top10 = sorted(results, key=lambda r: r[29], reverse=True)[:10]
+    bottom10 = sorted(results, key=lambda r: r[29])[:10]
+    very_low = [r[0] for r in results if r[5] == "Very Low"]
+
     logger.info(
-        "team_squad_strength: computed for %d national teams. "
-        "Top 5: %s",
-        len(results),
-        sorted(
-            [(r[0], r[20]) for r in results],
-            key=lambda x: x[1], reverse=True,
-        )[:5],
+        "team_squad_strength: %d teams. Coverage tiers: %s",
+        len(results), tier_counts,
     )
+    logger.info("Top 10 final_squad_strength: %s", [(t[0], t[29]) for t in top10])
+    logger.info("Bottom 10 final_squad_strength: %s", [(t[0], t[29]) for t in bottom10])
+    if very_low:
+        logger.info("Very Low coverage teams (%d): %s", len(very_low), very_low)
+
     return len(results)
 
 
@@ -1097,93 +1454,175 @@ def compute_team_squad_strength() -> int:
 # Feature output
 # ---------------------------------------------------------------------------
 
-_NEUTRAL_STRENGTH = 50.0   # used when data is unavailable
+_NEUTRAL_STRENGTH = 50.0
+
+
+# Extra names used in DB / CSV vs 2026 prediction team labels
+TEAM_LOOKUP_ALIASES: dict[str, list[str]] = {
+    "IR Iran": ["IR Iran", "Iran"],
+    "Korea Republic": ["Korea Republic", "South Korea"],
+    "Congo DR": ["Congo DR", "DR Congo"],
+    "Cabo Verde": ["Cabo Verde", "Cape Verde"],
+    "Côte d'Ivoire": ["Côte d'Ivoire", "Ivory Coast"],
+    "Czechia": ["Czechia", "Czech Republic"],
+    "Türkiye": ["Türkiye", "Turkey"],
+    "United States": ["United States", "USA"],
+}
+
+
+def _fetch_squad_row(conn: sqlite3.Connection, team: str) -> dict | None:
+    names = [team] + TEAM_LOOKUP_ALIASES.get(team, [])
+    sql = (
+        "SELECT final_squad_strength, coverage_ratio, coverage_tier, "
+        "data_quality_score, players_with_stats, computed_squad_strength, "
+        "fifa_fallback_strength, avg_league_weight "
+        "FROM team_squad_strength WHERE team = ?"
+    )
+    for name in names:
+        row = conn.execute(sql, (name,)).fetchone()
+        if row:
+            return dict(row)
+    if _col_exists(conn, "team_squad_strength", "overall_squad_strength"):
+        cov_col = (
+            "match_coverage"
+            if _col_exists(conn, "team_squad_strength", "match_coverage")
+            else "NULL"
+        )
+        for name in names:
+            row = conn.execute(
+                f"SELECT overall_squad_strength, {cov_col}, data_quality_score, "
+                "matched_players, squad_size FROM team_squad_strength WHERE team = ?",
+                (name,),
+            ).fetchone()
+            if row:
+                overall = row[0]
+                cov = row[1] if row[1] is not None else 0.0
+                return {
+                    "final_squad_strength": overall,
+                    "coverage_ratio": cov,
+                    "coverage_tier": "Unknown",
+                    "data_quality_score": row[2],
+                    "players_with_stats": row[3] or row[4],
+                    "computed_squad_strength": overall,
+                    "fifa_fallback_strength": overall,
+                    "avg_league_weight": None,
+                }
+    return None
 
 
 def get_squad_strength_features(
     team_a: str,
     team_b: str,
-) -> tuple[float, float, float, bool]:
+) -> tuple[float, float, float, bool, str, str, float, float, float, float]:
     """
-    Return (strength_a, strength_b, strength_diff, available).
+    Return squad features for prediction adjustment.
 
-    If squad strength data is unavailable for either team, returns
-    (50.0, 50.0, 0.0, False) so the caller can skip adjustment.
+    (strength_a, strength_b, diff, available, tier_a, tier_b,
+     coverage_a, coverage_b, quality_a, quality_b)
     """
+    empty = (
+        _NEUTRAL_STRENGTH, _NEUTRAL_STRENGTH, 0.0, False,
+        "Unknown", "Unknown", 0.0, 0.0, 0.0, 0.0,
+    )
     if not _SQUAD_ENABLED:
-        return _NEUTRAL_STRENGTH, _NEUTRAL_STRENGTH, 0.0, False
+        return empty
 
     try:
         conn = _open_db()
         try:
             if not _table_exists(conn, "team_squad_strength"):
-                return _NEUTRAL_STRENGTH, _NEUTRAL_STRENGTH, 0.0, False
-
-            def _get(team: str) -> float | None:
-                row = conn.execute(
-                    "SELECT overall_squad_strength FROM team_squad_strength WHERE team = ?",
-                    (team,),
-                ).fetchone()
-                return float(row[0]) if row else None
-
-            sa = _get(team_a)
-            sb = _get(team_b)
+                return empty
+            ra = _fetch_squad_row(conn, team_a)
+            rb = _fetch_squad_row(conn, team_b)
         finally:
             conn.close()
     except Exception as exc:
         logger.warning("Could not fetch squad strength: %s", exc)
-        return _NEUTRAL_STRENGTH, _NEUTRAL_STRENGTH, 0.0, False
+        return empty
 
-    if sa is None or sb is None:
-        # Log missing teams only for WC 2026 teams
-        if sa is None:
-            logger.debug("No squad strength data for %s.", team_a)
-        if sb is None:
-            logger.debug("No squad strength data for %s.", team_b)
-        sa = sa or _NEUTRAL_STRENGTH
-        sb = sb or _NEUTRAL_STRENGTH
-        return sa, sb, sa - sb, False
+    def _strength(row: dict | None) -> tuple[float, str, float, float]:
+        if row is None:
+            return _NEUTRAL_STRENGTH, "Unknown", 0.0, 0.0
+        fs = row.get("final_squad_strength")
+        if fs is None:
+            fs = row.get("overall_squad_strength", _NEUTRAL_STRENGTH)
+        return (
+            float(fs),
+            str(row.get("coverage_tier") or "Unknown"),
+            float(row.get("coverage_ratio") or 0),
+            float(row.get("data_quality_score") or 0),
+        )
 
-    return sa, sb, sa - sb, True
+    sa, tier_a, cov_a, dq_a = _strength(ra)
+    sb, tier_b, cov_b, dq_b = _strength(rb)
+    available = ra is not None and rb is not None
+    if not available:
+        if ra is None:
+            logger.debug("No squad strength for %s.", team_a)
+        if rb is None:
+            logger.debug("No squad strength for %s.", team_b)
+    return (sa, sb, sa - sb, available, tier_a, tier_b, cov_a, cov_b, dq_a, dq_b)
+
+
+def _max_adjustment_for_tiers(tier_a: str, tier_b: str) -> float:
+    tiers = {tier_a, tier_b}
+    if "Very Low" in tiers:
+        return 0.02
+    if "Low" in tiers:
+        return 0.03
+    if "Medium" in tiers:
+        return 0.05
+    return min(_MAX_SQUAD_ADJ, 0.08)
 
 
 def apply_squad_adjustment(
-    proba: list[float],   # [p_team_b_wins, p_draw, p_team_a_wins]
+    proba: list[float],
     strength_a: float,
     strength_b: float,
     available: bool,
-) -> tuple[list[float], bool]:
+    tier_a: str = "High",
+    tier_b: str = "High",
+) -> tuple[list[float], bool, float]:
     """
-    Apply conservative squad-strength adjustment to model probabilities.
+    Conservative squad adjustment on baseline probabilities.
 
-    proba: [prob_class0 (team_b wins), prob_class1 (draw), prob_class2 (team_a wins)]
-    Returns (adjusted_proba, adjustment_applied).
+    proba: [p_team_b, p_draw, p_team_a]
+    Returns (adjusted_proba, applied, adjustment_amount signed).
     """
-    if not _SQUAD_ENABLED or not available:
-        return proba, False
+    if not _SQUAD_ENABLED or not _SQUAD_ADJ_ENABLED or not available:
+        return proba, False, 0.0
 
     if len(proba) != 3:
-        return proba, False
+        return proba, False, 0.0
 
-    diff = (strength_a - strength_b) / 100.0         # normalise to [-1, 1]
-    diff = max(-1.0, min(1.0, diff))
-    adjustment = diff * _SQUAD_ADJ_WEIGHT * _MAX_SQUAD_ADJ  # max ±2% by default
+    squad_diff = strength_a - strength_b
+    norm_diff = max(-1.0, min(1.0, squad_diff / 30.0))
+    max_adj = _max_adjustment_for_tiers(tier_a, tier_b)
+    adjustment = norm_diff * max_adj
 
-    p0, p1, p2 = proba
-    if diff > 0:          # team_a stronger
-        p2 = min(1.0, p2 + abs(adjustment))
-        p0 = max(0.0, p0 - abs(adjustment) * 0.7)
-        p1 = max(0.0, p1 - abs(adjustment) * 0.3)
-    elif diff < 0:        # team_b stronger
-        p0 = min(1.0, p0 + abs(adjustment))
-        p2 = max(0.0, p2 - abs(adjustment) * 0.7)
-        p1 = max(0.0, p1 - abs(adjustment) * 0.3)
+    if abs(adjustment) < 1e-6:
+        return proba, False, 0.0
 
+    p0, p1, p2 = float(proba[0]), float(proba[1]), float(proba[2])
+    floor = 0.01
+    take = abs(adjustment)
+
+    if adjustment > 0:
+        p2 += take
+        side = p0 + p1
+        if side > 0:
+            p0 -= take * (p0 / side)
+            p1 -= take * (p1 / side)
+    else:
+        p0 += take
+        side = p2 + p1
+        if side > 0:
+            p2 -= take * (p2 / side)
+            p1 -= take * (p1 / side)
+
+    p0, p1, p2 = max(floor, p0), max(floor, p1), max(floor, p2)
     total = p0 + p1 + p2
-    if total > 0:
-        p0, p1, p2 = p0 / total, p1 / total, p2 / total
-
-    return [p0, p1, p2], True
+    return [p0 / total, p1 / total, p2 / total], True, adjustment
 
 
 # ---------------------------------------------------------------------------
@@ -1194,21 +1633,14 @@ def apply_squad_adjustment(
 def explain_squad_strength(
     team_a: str,
     team_b: str,
+    adjustment_amount: float = 0.0,
 ) -> str:
-    """Return a brief explanation of squad strength comparison for dashboard/predictions."""
+    """Readable squad comparison note for predictions."""
     try:
         conn = _open_db()
         try:
-            def _row(team: str) -> dict | None:
-                r = conn.execute(
-                    "SELECT overall_squad_strength, squad_size, matched_players, "
-                    "top_league_players, data_quality_score "
-                    "FROM team_squad_strength WHERE team = ?",
-                    (team,),
-                ).fetchone()
-                return dict(r) if r else None
-            ra = _row(team_a)
-            rb = _row(team_b)
+            ra = _fetch_squad_row(conn, team_a)
+            rb = _fetch_squad_row(conn, team_b)
         finally:
             conn.close()
     except Exception:
@@ -1216,41 +1648,44 @@ def explain_squad_strength(
 
     if ra is None and rb is None:
         return (
-            "Squad data was unavailable for both teams, "
-            "so this prediction relies on FIFA ranking, ELO, and historical patterns."
-        )
-    if ra is None:
-        return (
-            f"Squad data unavailable for {team_a}. "
-            f"{team_b} squad strength: {rb['overall_squad_strength']:.0f}/100."
-        )
-    if rb is None:
-        return (
-            f"Squad data unavailable for {team_b}. "
-            f"{team_a} squad strength: {ra['overall_squad_strength']:.0f}/100."
+            "Player-stat coverage unavailable for both teams; "
+            "prediction relies on FIFA ranking, ELO, and historical model features."
         )
 
-    stronger = team_a if ra["overall_squad_strength"] > rb["overall_squad_strength"] else team_b
-    diff     = abs(ra["overall_squad_strength"] - rb["overall_squad_strength"])
+    parts: list[str] = []
+    for team, row in ((team_a, ra), (team_b, rb)):
+        if row is None:
+            parts.append(f"{team}: no squad strength row.")
+            continue
+        tier = row.get("coverage_tier", "Unknown")
+        n = row.get("players_with_stats", 0)
+        if tier in ("Low", "Very Low"):
+            parts.append(
+                f"{team} has {tier} player-stat coverage ({n} players with stats); "
+                "missing players treated as unknown and squad influence reduced."
+            )
+        else:
+            parts.append(
+                f"{team} squad score {row['final_squad_strength']:.0f}/100 "
+                f"({n} players, avg league weight {row.get('avg_league_weight', 0):.2f})."
+            )
 
-    dq_a = ra.get("data_quality_score", 100)
-    dq_b = rb.get("data_quality_score", 100)
+    if ra and rb:
+        sa = float(ra["final_squad_strength"])
+        sb = float(rb["final_squad_strength"])
+        if sa > sb + 3:
+            parts.append(f"{team_a} has stronger current squad profile and league quality.")
+        elif sb > sa + 3:
+            parts.append(f"{team_b} has stronger current squad profile and league quality.")
 
-    coverage_note = ""
-    if dq_a < 50 or dq_b < 50:
-        low = team_a if dq_a < dq_b else team_b
-        coverage_note = (
-            f" ⚠️ Low squad data coverage for {low} "
-            f"(few players found in top 5 European leagues)."
+    if abs(adjustment_amount) >= 0.005:
+        favored = team_a if adjustment_amount > 0 else team_b
+        parts.append(
+            f"Squad adjustment shifted probability toward {favored} by "
+            f"{abs(adjustment_amount) * 100:.1f} percentage points (conservative cap)."
         )
 
-    return (
-        f"{stronger} has a stronger squad profile ({stronger} {ra['overall_squad_strength']:.0f}/100"
-        f" vs {team_b if stronger == team_a else team_a} "
-        f"{rb['overall_squad_strength']:.0f}/100; diff={diff:.1f})."
-        f" Based on {ra['squad_size']} and {rb['squad_size']} players in top-5 European leagues."
-        f"{coverage_note}"
-    )
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -1272,20 +1707,25 @@ def setup_squad_features() -> bool:
     try:
         create_squad_tables()
 
-        # Check if player stats already loaded
         stats_df = load_player_stats_from_db()
-        if stats_df.empty:
-            logger.info("Loading player stats from CSV ...")
-            raw_df = load_player_stats_csv()
-            if not raw_df.empty:
-                n = save_player_stats_to_db(raw_df)
-                logger.info("Loaded %d player stats rows.", n)
-            else:
-                logger.warning(
-                    "No player stats data available. "
-                    "Place players_data_2025_2026.csv in datasets/ for squad features."
-                )
-                return False
+        if len(stats_df) < 100:
+            wc_df = load_wc_player_stats_dataframe()
+            if not wc_df.empty:
+                n = save_player_stats_to_db(wc_df, replace_all=True)
+                logger.info("Loaded %d player stats from WC CSV into DB.", n)
+                stats_df = load_player_stats_from_db()
+            elif stats_df.empty:
+                raw_df = load_player_stats_csv(PLAYERS_CSV)
+                if not raw_df.empty:
+                    save_player_stats_to_db(raw_df)
+                    stats_df = load_player_stats_from_db()
+
+        if stats_df.empty or len(stats_df) < 50:
+            logger.warning(
+                "No player stats in DB (need wc_players_with_stats.csv). "
+                "Found %d rows.", len(stats_df),
+            )
+            return False
 
         # Try manual squads CSV
         manual_df = load_manual_squads_csv()
@@ -1306,6 +1746,10 @@ def setup_squad_features() -> bool:
             logger.warning("No team squad strength computed.")
             return False
 
+        logger.info(
+            "Squad features ready: %d players, %d teams with strength scores.",
+            len(stats_df), n_teams,
+        )
         return True
 
     except Exception as exc:
@@ -1313,5 +1757,6 @@ def setup_squad_features() -> bool:
             "squad_features.setup_squad_features() failed: %s. "
             "Predictions will proceed without squad adjustment.",
             exc,
+            exc_info=True,
         )
         return False

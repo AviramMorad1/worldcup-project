@@ -225,6 +225,46 @@ def load_table(table: str, sql: str | None = None) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def load_match_predictions(cache_key: str) -> pd.DataFrame:
+    """Reload when trainer run_at or squad-populated row count changes."""
+    if not table_exists("match_predictions"):
+        return pd.DataFrame()
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            return pd.read_sql_query("SELECT * FROM match_predictions", c)
+    except Exception:
+        return pd.DataFrame()
+
+
+def match_predictions_cache_key() -> str:
+    run_at = scalar(
+        "SELECT COALESCE(MAX(run_at), '') FROM match_predictions "
+        "WHERE tournament_year = 2026",
+        "",
+    )
+    squad_n = scalar(
+        "SELECT COUNT(*) FROM match_predictions "
+        "WHERE tournament_year = 2026 "
+        "AND squad_strength_a IS NOT NULL AND squad_strength_b IS NOT NULL",
+        0,
+    )
+    return f"{run_at}:{squad_n}"
+
+
+def count_2026_predictions_with_squad() -> int:
+    return int(
+        scalar(
+            "SELECT COUNT(*) FROM match_predictions "
+            "WHERE tournament_year = 2026 "
+            "AND squad_strength_a IS NOT NULL "
+            "AND squad_strength_b IS NOT NULL",
+            0,
+        )
+        or 0
+    )
+
+
+@st.cache_data(ttl=300)
 def scalar(sql: str, default=None):
     c = _conn()
     if c is None:
@@ -579,16 +619,15 @@ def tab_predictions(filters: dict) -> None:
 
     # Disclaimer
     st.info(
-        "**Model confidence** is the probability output of a calibrated ML classifier. "
-        "It reflects the model's certainty given available features (FIFA rankings, ELO, "
-        "head-to-head history) — **not** a guaranteed win probability. "
-        "Football has inherent variance that no model fully captures. "
-        "Squad strength (when available) provides a conservative additional signal based on "
-        "current club-season player stats from top 5 European leagues.",
+        "**Model confidence** comes from a baseline historical/ranking model (FIFA, ELO, H2H, "
+        "host flags), optionally adjusted by **current squad strength** from club-season stats. "
+        "Player statistics are available for approximately **900 of 1200** expected World Cup "
+        "players. Missing player stats are treated as **missing data**, not weak performance. "
+        "For low-coverage teams, squad influence is reduced and FIFA-ranking fallback is used.",
         icon="ℹ️",
     )
 
-    df = load_table("match_predictions")
+    df = load_match_predictions(match_predictions_cache_key())
     if df.empty:
         empty_state(
             "No predictions available yet.",
@@ -614,9 +653,21 @@ def tab_predictions(filters: dict) -> None:
     has_band         = "confidence_band"            in df26.columns
     has_expl         = "explanation"                 in df26.columns
     has_squad        = "squad_strength_a"            in df26.columns
-    has_adj_conf     = "squad_adjusted_confidence"   in df26.columns
+    has_adj_conf     = (
+        "adjusted_confidence" in df26.columns
+        or "squad_adjusted_confidence" in df26.columns
+    )
     has_raw_conf     = "raw_model_confidence"        in df26.columns
     has_adj_applied  = "squad_adjustment_applied"    in df26.columns
+    has_squad_diff   = "squad_strength_diff"         in df26.columns
+    has_cov_a        = "squad_coverage_a"            in df26.columns
+    has_cov_b        = "squad_coverage_b"            in df26.columns
+    has_tier_a       = "squad_coverage_tier_a"       in df26.columns
+    has_tier_b       = "squad_coverage_tier_b"       in df26.columns
+    has_key_factors  = "key_factors"                 in df26.columns
+    has_combined_sig = "combined_strength_signal"    in df26.columns
+    squad_rows_in_db = count_2026_predictions_with_squad()
+    has_expl_col     = has_expl
 
     # Load model metrics for baseline comparison
     metrics_json: dict = {}
@@ -629,9 +680,16 @@ def tab_predictions(filters: dict) -> None:
     # ── Summary cards ──────────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns(4, gap="small")
     c1.metric("Matches", len(df26))
-    if "confidence" in df26.columns:
-        avg_conf = df26["confidence"].mean()
-        c2.metric("Avg Model Confidence", f"{avg_conf:.1%}")
+    conf_for_avg = (
+        "adjusted_confidence"
+        if "adjusted_confidence" in df26.columns
+        else "squad_adjusted_confidence"
+        if "squad_adjusted_confidence" in df26.columns
+        else "confidence"
+    )
+    if conf_for_avg in df26.columns:
+        avg_conf = pd.to_numeric(df26[conf_for_avg], errors="coerce").mean()
+        c2.metric("Avg Adjusted Confidence", f"{avg_conf:.1%}")
         if has_band:
             high_count = (df26["confidence_band"] == "High").sum()
             c3.metric("High-confidence predictions", f"{high_count}/{len(df26)}")
@@ -657,38 +715,157 @@ def tab_predictions(filters: dict) -> None:
         with st.expander("Squad data health", expanded=False):
             sc1, sc2, sc3, sc4 = st.columns(4, gap="small")
             sc1.metric("Player stats loaded", len(ps_count) if not ps_count.empty else 0)
-            sc2.metric("Squad rosters loaded", len(sq_count) if not sq_count.empty else 0)
-            sc3.metric("Teams with strength score", len(sqs_count) if not sqs_count.empty else 0)
-            adj_ct = int(df26["squad_adjustment_applied"].sum()) if has_adj_applied else 0
-            sc4.metric("Predictions adjusted", adj_ct)
-            if has_squad and not df26.empty:
-                st.caption(
-                    "Squad strength is a heuristic based on current club-season stats "
-                    "from top 5 European leagues. Teams with few/no players in these leagues "
-                    "receive a neutral score (50/100) and are not adjusted."
+            sc2.metric("Teams with squad strength", len(sqs_count) if not sqs_count.empty else 0)
+            if not sqs_count.empty and "coverage_tier" in sqs_count.columns:
+                tier_dist = sqs_count["coverage_tier"].value_counts().to_dict()
+                sc3.metric("Coverage tiers", str(tier_dist))
+            else:
+                sc3.metric("Squad rosters (optional)", len(sq_count) if not sq_count.empty else 0)
+            if has_adj_applied:
+                adj_ct = int(
+                    pd.to_numeric(df26["squad_adjustment_applied"], errors="coerce")
+                    .fillna(0)
+                    .sum()
                 )
+            else:
+                adj_ct = 0
+            sc4.metric("Predictions adjusted", adj_ct)
+            boost_col = (
+                "confidence_boost_amount"
+                if "confidence_boost_amount" in df26.columns
+                else "squad_adjustment_amount"
+            )
+            if has_adj_applied and boost_col in df26.columns:
+                adj_vals = pd.to_numeric(df26[boost_col], errors="coerce")
+                avg_adj = adj_vals.abs().mean()
+                if pd.notna(avg_adj):
+                    st.caption(f"Average confidence boost: {avg_adj:.3f}")
+            if has_combined_sig:
+                sig_vals = pd.to_numeric(
+                    df26["combined_strength_signal"], errors="coerce"
+                )
+                if sig_vals.notna().any():
+                    st.caption(
+                        f"Combined strength signal range: "
+                        f"{sig_vals.min():+.2f} to {sig_vals.max():+.2f}"
+                    )
+            st.caption(
+                "Missing players are uncertainty, not zero skill. Low-coverage teams "
+                "blend FIFA fallback into squad scores; adjustment caps are tighter."
+            )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Predictions table ──────────────────────────────────────────────────
+    adj_conf_col = (
+        "adjusted_confidence"
+        if "adjusted_confidence" in df26.columns
+        else "squad_adjusted_confidence"
+    )
+    baseline_conf_col = (
+        "raw_model_confidence" if has_raw_conf else "confidence"
+    )
     col_map = {
-        "group_name":                "Group",
-        "team_a":                    "Team A",
-        "team_b":                    "Team B",
-        "predicted_winner":          "Predicted Winner",
-        "squad_adjusted_confidence": "Adj. Confidence",
-        "confidence":                "Model Confidence",
-        "confidence_band":           "Band",
-        "squad_strength_a":          "Squad A",
-        "squad_strength_b":          "Squad B",
-        "stage":                     "Stage",
+        "group_name":       "Group",
+        "team_a":           "Team A",
+        "team_b":           "Team B",
+        "predicted_winner": "Winner",
+        baseline_conf_col:  "Model Confidence",
+        adj_conf_col:       "Adjusted Confidence",
+        "confidence_band":  "Confidence Band",
+        "squad_strength_a": "Squad A",
+        "squad_strength_b": "Squad B",
+        "squad_strength_diff": "Squad Diff",
+        "squad_coverage_a": "Coverage A",
+        "squad_coverage_b": "Coverage B",
+        "squad_coverage_tier_a": "Tier A",
+        "squad_coverage_tier_b": "Tier B",
+        "key_factors":      "Key Factors",
+        "explanation":      "Explanation",
     }
     display_cols = [c for c in col_map if c in df26.columns]
     df_show = df26[display_cols].rename(columns=col_map).copy()
 
-    sort_col = "Adj. Confidence" if "Adj. Confidence" in df_show.columns else "Model Confidence"
+    with st.expander("What do these columns mean?", expanded=False):
+        st.markdown(
+            """
+| Column | Meaning |
+|--------|---------|
+| **Winner** | Team most likely to win (or Draw) after baseline model + optional squad tweak |
+| **Model Confidence** | Baseline ML probability for the predicted outcome (FIFA rank, ELO, H2H, hosts) |
+| **Adjusted Confidence** | Baseline plus agreement-based boost from squad, FIFA rank, points, and ELO (capped) |
+| **Confidence Band** | High / Medium / Low bucket from adjusted confidence |
+| **Squad A / B** | Current squad strength score (0–100) from club-season player stats |
+| **Squad Diff** | Squad A minus Squad B (positive favors Team A) |
+| **Coverage A / B** | Share of expected 26-man roster with stats in our database (0–100%) |
+| **Key Factors** | Short summary: FIFA rank, ELO, squad, coverage warnings |
+| **Explanation** | Full readable paragraph for this match |
+
+**—** means squad data was not stored yet (re-run collector + trainer), not that the team has no players.
+            """
+        )
+
+    if squad_rows_in_db == 0:
+        st.warning(
+            "Squad columns are empty in the database. The trainer likely ran before "
+            "player stats were loaded. Run: `docker compose up --build` (collector then "
+            "trainer), or `docker compose restart trainer` after collector finishes."
+        )
+    elif squad_rows_in_db < len(df26):
+        st.info(
+            f"Squad strength is populated for {squad_rows_in_db}/{len(df26)} "
+            "2026 predictions. Re-run trainer after collector loads player stats "
+            "to refresh all rows.",
+            icon="ℹ️",
+        )
+
+    for col, fmt in (
+        ("Squad A", "{:.1f}"),
+        ("Squad B", "{:.1f}"),
+        ("Squad Diff", "{:+.1f}"),
+    ):
+        if col in df_show.columns:
+            nums = pd.to_numeric(df_show[col], errors="coerce")
+            df_show[col] = nums.apply(lambda v: fmt.format(v) if pd.notna(v) else "—")
+    for cov_col, tier_col in (
+        ("Coverage A", "Tier A"),
+        ("Coverage B", "Tier B"),
+    ):
+        if cov_col not in df_show.columns:
+            continue
+        cov_nums = pd.to_numeric(df_show[cov_col], errors="coerce")
+        tier_vals = (
+            df_show[tier_col]
+            if tier_col in df_show.columns
+            else pd.Series([None] * len(df_show), index=df_show.index)
+        )
+        formatted = []
+        for v, tier in zip(cov_nums, tier_vals):
+            if pd.isna(v):
+                formatted.append("—")
+                continue
+            tier_s = (
+                str(tier).strip()
+                if tier is not None and str(tier) not in ("", "nan", "None")
+                else ""
+            )
+            formatted.append(f"{v:.0%} ({tier_s})" if tier_s else f"{v:.0%}")
+        df_show[cov_col] = formatted
+    df_show.drop(columns=["Tier A", "Tier B"], inplace=True, errors="ignore")
+
+    sort_col = (
+        "Adjusted Confidence"
+        if "Adjusted Confidence" in df_show.columns
+        else "Model Confidence"
+    )
     if sort_col in df_show.columns:
-        df_show = df_show.sort_values(sort_col, ascending=False)
+        sort_vals = pd.to_numeric(
+            df26[adj_conf_col if sort_col == "Adjusted Confidence" else baseline_conf_col],
+            errors="coerce",
+        )
+        df_show = df_show.assign(_sort=sort_vals.values).sort_values(
+            "_sort", ascending=False
+        ).drop(columns="_sort")
 
     def _cell_confidence(v):
         if not isinstance(v, (float, int)):
@@ -711,8 +888,13 @@ def tab_predictions(filters: dict) -> None:
                 return "color:#ef9a9a;font-weight:600"
             return ""
 
-        conf_cols = [c for c in ["Model Confidence", "Adj. Confidence"] if c in df_show.columns]
-        subset_band = ["Band"] if "Band" in df_show.columns else []
+        conf_cols = [
+            c for c in ("Model Confidence", "Adjusted Confidence")
+            if c in df_show.columns
+        ]
+        subset_band = (
+            ["Confidence Band"] if "Confidence Band" in df_show.columns else []
+        )
 
         styled = df_show.style
         for cc in conf_cols:
@@ -720,9 +902,6 @@ def tab_predictions(filters: dict) -> None:
         if subset_band:
             styled = styled.map(_cell_band, subset=subset_band)
         fmt: dict = {cc: "{:.1%}" for cc in conf_cols}
-        for sq_col in ["Squad A", "Squad B"]:
-            if sq_col in df_show.columns:
-                fmt[sq_col] = "{:.1f}"
         styled = styled.format(fmt, na_rep="—")
 
         with st.expander("Predictions table", expanded=True):
@@ -1287,6 +1466,34 @@ def tab_model() -> None:
 
         if m.get("run_at"):
             st.caption(f"Last trained: {str(m['run_at'])[:19]}")
+
+        baseline = m.get("baseline") or {}
+        base_acc = baseline.get("accuracy")
+        base_f1 = baseline.get("f1_macro")
+        if base_acc is not None and base_f1 is not None:
+            beats = m.get("ml_beats_baseline_f1", False)
+            st.caption(
+                f"Ranking baseline: accuracy {float(base_acc):.1%}, "
+                f"F1 macro {float(base_f1):.3f}"
+                + (" — ML beats baseline on F1" if beats else " — baseline F1 ≥ ML")
+            )
+
+        if m.get("single_class_collapse"):
+            st.warning(
+                "The ML model predicts only one outcome class on the 2022 test set. "
+                "Retrain after symmetric augmentation fixes (see trainer logs)."
+            )
+        elif m.get("predicted_class_distribution"):
+            st.caption(
+                "Test predicted classes: "
+                + ", ".join(
+                    f"{k}={v}"
+                    for k, v in m["predicted_class_distribution"].items()
+                )
+            )
+
+        if m.get("proba_mapping"):
+            st.caption(f"Probability order: {m['proba_mapping']}")
 
         acc = m.get("accuracy")
         if acc is not None and float(acc) < 0.55:

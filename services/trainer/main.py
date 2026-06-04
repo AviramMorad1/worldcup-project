@@ -1,5 +1,7 @@
 import logging
+import sqlite3
 import time
+from pathlib import Path
 
 import schedule
 
@@ -24,7 +26,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DB_PATH = "/app/data/worldcup.db"
+COLLECTOR_READY_FLAG = Path("/app/data/collector_ready.flag")
+PREDICTION_READY_FLAG = Path("/app/data/prediction_ready.flag")
+PLAYER_STATS_MIN_ROWS = 100
+WAIT_POLL_SECONDS = 10
+WAIT_MAX_SECONDS = 300
 RETRAIN_INTERVAL_DAYS = 7
+
+
+def _player_stats_count() -> int:
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM raw_player_stats"
+            ).fetchone()
+            return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return 0
+
+
+def wait_for_player_stats() -> None:
+    """
+    Wait for collector phase-1 (football + player stats) before 2026 predictions.
+    """
+    deadline = time.time() + WAIT_MAX_SECONDS
+    while time.time() < deadline:
+        count = _player_stats_count()
+        if count >= PLAYER_STATS_MIN_ROWS:
+            logger.info("Player stats available in DB: %d rows.", count)
+            return
+        if PREDICTION_READY_FLAG.exists():
+            logger.info(
+                "prediction_ready flag set; waiting for player stats (rows=%d).",
+                count,
+            )
+        time.sleep(WAIT_POLL_SECONDS)
+
+    count = _player_stats_count()
+    logger.info(
+        "Proceeding with predictions (player stats rows=%d). "
+        "Trainer will load wc_players_with_stats.csv directly if needed.",
+        count,
+    )
 
 
 def run_training_cycle() -> None:
@@ -49,6 +93,7 @@ def run_training_cycle() -> None:
     metrics = train_models(X, y, years, sample_weight)
     save_metrics(metrics)
 
+    wait_for_player_stats()
     run_2026_predictions()
 
     logger.info("Trainer cycle completed")

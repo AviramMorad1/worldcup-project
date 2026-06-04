@@ -397,6 +397,111 @@ FEATURE_COLS = [
     "current_points_diff",
 ]
 
+LABEL_NAMES = {0: "B wins", 1: "Draw", 2: "A wins"}
+
+
+def _label_distribution(y: pd.Series, title: str) -> dict[int, int]:
+    counts = y.value_counts().to_dict()
+    dist = {int(k): int(v) for k, v in counts.items()}
+    total = int(len(y))
+    parts = ", ".join(
+        f"{LABEL_NAMES.get(k, k)}={v} ({100 * v / total:.1f}%)"
+        for k, v in sorted(dist.items())
+    )
+    logger.info("%s label distribution (n=%d): %s", title, total, parts or "empty")
+    return dist
+
+
+def log_training_bias_diagnostics(
+    matches_df: pd.DataFrame,
+    X: pd.DataFrame,
+    y: pd.Series,
+    rankings_df: pd.DataFrame | None = None,
+) -> None:
+    """Log Team A/B asymmetry in raw data and built features (labels: 0=B, 1=Draw, 2=A)."""
+    _label_distribution(y, "Feature matrix (before augmentation)")
+
+    if matches_df.empty:
+        return
+
+    df = matches_df.copy()
+    df["score_a"] = pd.to_numeric(df["score_a"], errors="coerce")
+    df["score_b"] = pd.to_numeric(df["score_b"], errors="coerce")
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    df = df.dropna(subset=["score_a", "score_b", "year"])
+
+    a_wins = int((df["score_a"] > df["score_b"]).sum())
+    b_wins = int((df["score_a"] < df["score_b"]).sum())
+    draws = int((df["score_a"] == df["score_b"]).sum())
+    total = len(df)
+    logger.info(
+        "Raw match outcomes (team_a perspective): A wins=%d (%.1f%%), "
+        "B wins=%d (%.1f%%), draws=%d (%.1f%%)",
+        a_wins, 100 * a_wins / total if total else 0,
+        b_wins, 100 * b_wins / total if total else 0,
+        draws, 100 * draws / total if total else 0,
+    )
+
+    for year in sorted(df["year"].unique()):
+        yr = df[df["year"] == year]
+        aw = int((yr["score_a"] > yr["score_b"]).sum())
+        logger.info("  Year %d: team_a wins %d/%d matches", int(year), aw, len(yr))
+
+    if rankings_df is not None and not rankings_df.empty and not X.empty:
+        better_a = int((X["rank_diff"] < 0).sum())
+        better_b = int((X["rank_diff"] > 0).sum())
+        tied = int((X["rank_diff"] == 0).sum())
+        logger.info(
+            "FIFA rank at match year: lower rank (better) is team_a in %d rows, "
+            "team_b in %d, tied %d (rank_diff = rank_a - rank_b)",
+            better_a, better_b, tied,
+        )
+
+
+def augment_symmetric_matches(
+    X: pd.DataFrame,
+    y: pd.Series,
+    sample_weight: pd.Series | None = None,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series | None]:
+    """
+    Mirror each row (Team B vs Team A) for training only.
+
+    Swaps directional features and flips labels 0<->2; draw stays 1.
+    Mirrored rows keep the same recency sample_weight as the original.
+    """
+    if X.empty:
+        return X, y, sample_weight
+
+    _label_distribution(y, "Before symmetric augmentation")
+
+    X_mirror = X.copy()
+    X_mirror["rank_diff"] = -X["rank_diff"]
+    X_mirror["elo_diff"] = -X["elo_diff"]
+    X_mirror["h2h_win_rate"] = 1.0 - X["h2h_win_rate"]
+    X_mirror["h2h_goal_diff"] = -X["h2h_goal_diff"]
+    X_mirror["current_rank_diff"] = -X["current_rank_diff"]
+    X_mirror["current_points_diff"] = -X["current_points_diff"]
+    X_mirror["is_host_a"] = X["is_host_b"].values
+    X_mirror["is_host_b"] = X["is_host_a"].values
+
+    y_mirror = y.map({0: 2, 2: 0, 1: 1})
+
+    X_aug = pd.concat([X, X_mirror], ignore_index=True)
+    y_aug = pd.concat([y, y_mirror], ignore_index=True)
+
+    if sample_weight is not None:
+        sw_aug = pd.concat([sample_weight, sample_weight], ignore_index=True)
+    else:
+        sw_aug = None
+
+    _label_distribution(y_aug, "After symmetric augmentation")
+    logger.info(
+        "Symmetric augmentation: %d -> %d training rows (mirrored duplicates).",
+        len(X),
+        len(X_aug),
+    )
+    return X_aug, y_aug, sw_aug
+
 
 def build_feature_matrix(
     matches_df: pd.DataFrame,
@@ -501,6 +606,7 @@ def build_feature_matrix(
         "Feature matrix built: %d rows, features=%s.",
         len(X), FEATURE_COLS,
     )
+    log_training_bias_diagnostics(df, X, y, rankings_df)
     if _RECENCY_ENABLED:
         logger.info(
             "Recency weighting enabled (decay=%.2f, min=%.2f). "

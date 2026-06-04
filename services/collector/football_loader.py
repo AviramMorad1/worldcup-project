@@ -21,6 +21,7 @@ Optional:
 import logging
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -633,41 +634,65 @@ def _load_current_rankings(conn: sqlite3.Connection) -> None:
 # Player stats loader (optional)
 # ---------------------------------------------------------------------------
 
-PLAYERS_CSV = DATASETS_DIR / "players_data_2025_2026.csv"
+WC_PLAYERS_CSV_PATHS = [
+    DATASETS_DIR / "squads" / "wc_players_with_stats.csv",
+    DATASETS_DIR / "wc_players_with_stats.csv",
+    DATASETS_DIR / "wc_players_with_stats(1).csv",
+    DATASETS_DIR / "players_data_2025_2026.csv",
+    DATASETS_DIR / "players_data-2025_2026.csv",
+]
+
+LEAGUE_STRENGTHS_CSV = DATASETS_DIR / "league_strengths.csv"
 
 _DDL_PLAYER_STATS = """
     CREATE TABLE IF NOT EXISTS raw_player_stats (
-        id                   TEXT PRIMARY KEY,
-        player_name          TEXT,
+        id                     TEXT PRIMARY KEY,
+        player_name            TEXT,
         normalized_player_name TEXT,
-        nation_code          TEXT,
-        national_team        TEXT,
-        position             TEXT,
-        club                 TEXT,
-        league               TEXT,
-        age                  REAL,
-        appearances          REAL,
-        starts               REAL,
-        minutes              REAL,
-        nineties             REAL,
-        goals                REAL,
-        assists              REAL,
-        shots                REAL,
-        shots_on_target      REAL,
-        saves                REAL,
-        clean_sheets         REAL,
-        yellow_cards         REAL,
-        red_cards            REAL,
-        crosses              REAL,
-        interceptions        REAL,
-        tackles_won          REAL,
-        plus_minus           REAL,
-        points_per_match     REAL,
-        league_weight        REAL,
-        source_file          TEXT,
-        collected_at         TEXT
+        national_team          TEXT,
+        nation_code            TEXT,
+        position               TEXT,
+        club                   TEXT,
+        league                 TEXT,
+        normalized_league_name TEXT,
+        league_weight          REAL,
+        age                    REAL,
+        caps                   REAL,
+        goals_intl             REAL,
+        is_captain             INTEGER,
+        appearances            REAL,
+        starts                 REAL,
+        minutes                REAL,
+        nineties               REAL,
+        goals                  REAL,
+        assists                REAL,
+        goals_assists          REAL,
+        shots                  REAL,
+        shots_on_target        REAL,
+        saves                  REAL,
+        clean_sheets           REAL,
+        yellow_cards           REAL,
+        red_cards              REAL,
+        crosses                REAL,
+        interceptions          REAL,
+        tackles_won            REAL,
+        plus_minus             REAL,
+        points_per_match       REAL,
+        source_file            TEXT,
+        collected_at           TEXT
     )
 """
+
+_PLAYER_STATS_COLS = [
+    "id", "player_name", "normalized_player_name", "national_team", "nation_code",
+    "position", "club", "league", "normalized_league_name", "league_weight",
+    "age", "caps", "goals_intl", "is_captain",
+    "appearances", "starts", "minutes", "nineties",
+    "goals", "assists", "goals_assists",
+    "shots", "shots_on_target", "saves", "clean_sheets",
+    "yellow_cards", "red_cards", "crosses", "interceptions", "tackles_won",
+    "plus_minus", "points_per_match", "source_file", "collected_at",
+]
 
 _DDL_NATIONAL_SQUADS = """
     CREATE TABLE IF NOT EXISTS raw_national_squads (
@@ -687,42 +712,60 @@ _DDL_NATIONAL_SQUADS = """
     )
 """
 
-# FBref Nation code → national team (subset used in loader)
+# Nation code → national team (WC 2026 + common FBref codes)
 _NATION_CODE_MAP: dict[str, str] = {
-    "MEX": "Mexico",       "KOR": "Korea Republic",   "RSA": "South Africa",
-    "CZE": "Czechia",      "CAN": "Canada",            "BIH": "Bosnia and Herzegovina",
-    "QAT": "Qatar",        "SUI": "Switzerland",       "HAI": "Haiti",
-    "BRA": "Brazil",       "SCO": "Scotland",          "MAR": "Morocco",
-    "USA": "United States","AUS": "Australia",         "PAR": "Paraguay",
-    "TUR": "Türkiye",      "CIV": "Côte d'Ivoire",     "GER": "Germany",
-    "ECU": "Ecuador",      "CUW": "Curaçao",           "NED": "Netherlands",
-    "SWE": "Sweden",       "JPN": "Japan",             "TUN": "Tunisia",
-    "IRN": "IR Iran",      "BEL": "Belgium",           "NZL": "New Zealand",
-    "EGY": "Egypt",        "KSA": "Saudi Arabia",      "ESP": "Spain",
-    "URU": "Uruguay",      "CPV": "Cabo Verde",        "FRA": "France",
-    "IRQ": "Iraq",         "SEN": "Senegal",           "NOR": "Norway",
-    "ARG": "Argentina",    "AUT": "Austria",           "ALG": "Algeria",
-    "JOR": "Jordan",       "POR": "Portugal",          "UZB": "Uzbekistan",
-    "COD": "Congo DR",     "COL": "Colombia",          "GHA": "Ghana",
-    "ENG": "England",      "PAN": "Panama",            "CRO": "Croatia",
-    # Additional nations in dataset
-    "ITA": "Italy",        "DEN": "Denmark",           "POL": "Poland",
-    "SRB": "Serbia",       "CMR": "Cameroon",          "NGA": "Nigeria",
-    "WAL": "Wales",        "ISR": "Israel",            "GEO": "Georgia",
-    "CHI": "Chile",        "NOR": "Norway",            "HUN": "Hungary",
+    "ARG": "Argentina", "BRA": "Brazil", "ENG": "England", "FRA": "France",
+    "GER": "Germany", "DEU": "Germany", "ESP": "Spain", "POR": "Portugal",
+    "GHA": "Ghana", "USA": "United States", "MAR": "Morocco", "SEN": "Senegal",
+    "URU": "Uruguay", "COL": "Colombia", "JPN": "Japan", "KOR": "Korea Republic",
+    "MEX": "Mexico", "BEL": "Belgium", "SUI": "Switzerland", "CRO": "Croatia",
+    "ITA": "Italy", "AUS": "Australia", "QAT": "Qatar", "KSA": "Saudi Arabia",
+    "EGY": "Egypt", "IRN": "IR Iran", "TUN": "Tunisia", "ALG": "Algeria",
+    "ECU": "Ecuador", "PAR": "Paraguay", "PRY": "Paraguay", "CHI": "Chile",
+    "CRC": "Costa Rica", "NZL": "New Zealand", "CAN": "Canada", "PAN": "Panama",
+    "UKR": "Ukraine", "AUT": "Austria", "SCO": "Scotland", "CZE": "Czechia",
+    "NOR": "Norway", "SWE": "Sweden", "DEN": "Denmark", "SRB": "Serbia",
+    "TUR": "Türkiye", "NED": "Netherlands", "CIV": "Côte d'Ivoire",
+    "CMR": "Cameroon", "NGA": "Nigeria", "RSA": "South Africa", "ZAF": "South Africa",
+    "UZB": "Uzbekistan", "JOR": "Jordan", "IRQ": "Iraq", "CPV": "Cabo Verde",
+    "COD": "Congo DR", "CUW": "Curaçao", "HAI": "Haiti", "MEX": "Mexico",
+    "BIH": "Bosnia and Herzegovina",
 }
 
-_LEAGUE_WEIGHTS: dict[str, float] = {
-    "eng premier league": 1.00,
-    "es la liga":         0.95,
-    "de bundesliga":      0.90,
-    "it serie a":         0.90,
-    "fr ligue 1":         0.85,
+_TEAM_TO_CODE: dict[str, str] = {v: k for k, v in _NATION_CODE_MAP.items()}
+
+# Squad CSV names → names used in 2026 predictions / rankings
+_CANONICAL_TEAM_NAME: dict[str, str] = {
+    "Czech Republic": "Czechia",
+    "South Korea": "Korea Republic",
+    "Ivory Coast": "Côte d'Ivoire",
+    "Cape Verde": "Cabo Verde",
+    "Turkey": "Türkiye",
+    "DR Congo": "Congo DR",
+    "Iran": "IR Iran",
 }
+
+
+def _canonical_team(team: str) -> str:
+    s = team.strip()
+    return _CANONICAL_TEAM_NAME.get(s, s)
+
+
+_LEAGUE_WEIGHT_CACHE: dict[str, float] | None = None
+
+
+def _norm_name(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    nfkd = unicodedata.normalize("NFKD", name)
+    ascii_s = nfkd.encode("ascii", "ignore").decode("ascii").lower()
+    clean = re.sub(r"[^a-z0-9\s]", " ", ascii_s)
+    return re.sub(r"\s+", " ", clean).strip()
 
 
 def _parse_nation_code(nation_str: str) -> tuple[str, str]:
-    if not isinstance(nation_str, str):
+    """Parse FBref Nation field like 'ar ARG' → ('ARG', 'Argentina')."""
+    if not isinstance(nation_str, str) or not nation_str.strip():
         return ("", "")
     parts = nation_str.strip().split()
     code = parts[-1].upper() if len(parts) >= 2 else parts[0].upper()
@@ -730,93 +773,253 @@ def _parse_nation_code(nation_str: str) -> tuple[str, str]:
     return (code, team)
 
 
-def _player_league_weight(comp: str) -> float:
-    if not isinstance(comp, str):
-        return 0.5
-    return _LEAGUE_WEIGHTS.get(comp.strip().lower(), 0.5)
+def _load_league_weight_map() -> dict[str, float]:
+    global _LEAGUE_WEIGHT_CACHE
+    if _LEAGUE_WEIGHT_CACHE is not None:
+        return _LEAGUE_WEIGHT_CACHE
+
+    weights: dict[str, float] = {
+        "eng premier league": 1.0, "es la liga": 0.95, "de bundesliga": 0.92,
+        "it serie a": 0.92, "fr ligue 1": 0.88, "pt primeira liga": 0.78,
+        "mls": 0.65, "saudi pro league": 0.62,
+    }
+    if LEAGUE_STRENGTHS_CSV.exists():
+        try:
+            ldf = pd.read_csv(LEAGUE_STRENGTHS_CSV)
+            for _, lr in ldf.iterrows():
+                norm = str(lr.get("normalized_league_name", "")).strip().lower()
+                if not norm:
+                    norm = _norm_name(str(lr.get("league_name", "")))
+                try:
+                    weights[norm] = float(lr["strength_weight"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+            logger.info("Loaded %d league weights from league_strengths.csv.", len(ldf))
+        except Exception as exc:
+            logger.warning("Could not read league_strengths.csv: %s", exc)
+    else:
+        logger.info(
+            "league_strengths.csv not found — using inline fallback league weights."
+        )
+
+    _LEAGUE_WEIGHT_CACHE = weights
+    return weights
+
+
+def _league_weight_for(league: str) -> tuple[str, float]:
+    weights = _load_league_weight_map()
+    n = _norm_name(league)
+    if not n:
+        return ("unknown", 0.45)
+    if n in weights:
+        return (n, weights[n])
+    for key, w in weights.items():
+        if key in n or n in key:
+            return (key, w)
+    return (n, 0.50)
+
+
+def _migrate_player_stats_schema(conn: sqlite3.Connection) -> None:
+    """Add any missing columns to raw_player_stats (safe migration)."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(raw_player_stats)").fetchall()}
+    migrations = [
+        ("normalized_league_name", "TEXT"),
+        ("goals_assists", "REAL"),
+        ("caps", "REAL"),
+        ("goals_intl", "REAL"),
+        ("is_captain", "INTEGER"),
+    ]
+    for col, ctype in migrations:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE raw_player_stats ADD COLUMN {col} {ctype}")
+            conn.commit()
+            logger.info("raw_player_stats: added column '%s'.", col)
+
+
+def _find_players_csv() -> Path | None:
+    for path in WC_PLAYERS_CSV_PATHS:
+        if path.exists():
+            return path
+    return None
+
+
+def _float_val(row: pd.Series, *cols: str) -> float | None:
+    for col in cols:
+        if col not in row.index:
+            continue
+        v = row.get(col)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            continue
+        try:
+            s = str(v).replace(",", "").strip()
+            if s in ("", "nan"):
+                continue
+            return float(s)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _rows_from_wc_csv(df: pd.DataFrame, source_name: str, now: str) -> list[tuple]:
+    """Parse wc_players_with_stats.csv format."""
+    rows = []
+    for idx, row in df.iterrows():
+        player = str(row.get("player_name", row.get("Player", ""))).strip()
+        if not player:
+            continue
+        team = str(row.get("team", row.get("national_team", ""))).strip()
+        if not team:
+            _, team = _parse_nation_code(str(row.get("Nation", "")))
+        team = _canonical_team(team)
+        code = _TEAM_TO_CODE.get(team, "")
+
+        league = str(
+            row.get("stats_league", row.get("league", row.get("Comp", "")))
+        ).strip()
+        norm_league, lw = _league_weight_for(league)
+
+        goals = _float_val(row, "goals_stats", "goals", "Gls")
+        ast   = _float_val(row, "assists", "Ast")
+        ga    = _float_val(row, "G+A", "goals_assists")
+        if ga is None and goals is not None and ast is not None:
+            ga = goals + ast
+
+        cap = row.get("is_captain", 0)
+        try:
+            is_cap = int(float(cap)) if cap not in ("", None) else 0
+        except (TypeError, ValueError):
+            is_cap = 0
+
+        pid = f"wc_{_norm_name(team)}_{_norm_name(player)}_{idx}"
+        rows.append((
+            pid, player, _norm_name(player), team, code,
+            str(row.get("stats_position", row.get("position_wc", row.get("Pos", "")))).strip(),
+            str(row.get("club_wc", row.get("club", row.get("Squad", "")))).strip(),
+            league, norm_league, lw,
+            _float_val(row, "age_wc", "age", "Age"),
+            _float_val(row, "caps"),
+            _float_val(row, "goals_intl"),
+            is_cap,
+            _float_val(row, "matches_played", "appearances", "MP"),
+            _float_val(row, "starts", "Starts"),
+            _float_val(row, "minutes", "Min"),
+            _float_val(row, "90s", "nineties"),
+            goals, ast, ga,
+            _float_val(row, "shots", "Sh"),
+            _float_val(row, "shots_on_target", "SoT"),
+            _float_val(row, "saves", "Saves"),
+            _float_val(row, "clean_sheets", "CS"),
+            _float_val(row, "yellow_cards", "CrdY"),
+            _float_val(row, "red_cards", "CrdR"),
+            _float_val(row, "crosses", "Crs"),
+            _float_val(row, "interceptions", "Int"),
+            _float_val(row, "tackles_won", "TklW"),
+            _float_val(row, "plus_minus", "+/-"),
+            _float_val(row, "points_per_match", "PPM"),
+            source_name, now,
+        ))
+    return rows
+
+
+def _rows_from_fbref_csv(df: pd.DataFrame, source_name: str, now: str) -> list[tuple]:
+    """Parse classic FBref players_data CSV format."""
+    rows = []
+    for idx, row in df.iterrows():
+        player = str(row.get("Player", "")).strip()
+        if not player:
+            continue
+        code, team = _parse_nation_code(str(row.get("Nation", "")))
+        league = str(row.get("Comp", row.get("league", ""))).strip()
+        norm_league, lw = _league_weight_for(league)
+        goals = _float_val(row, "Gls", "goals")
+        ast   = _float_val(row, "Ast", "assists")
+        ga    = _float_val(row, "G+A")
+        if ga is None and goals is not None and ast is not None:
+            ga = goals + ast
+        rows.append((
+            f"ps_{idx}", player, _norm_name(player), team, code,
+            str(row.get("Pos", "")).strip(),
+            str(row.get("Squad", "")).strip(),
+            league, norm_league, lw,
+            _float_val(row, "Age"),
+            None, None, 0,
+            _float_val(row, "MP"), _float_val(row, "Starts"), _float_val(row, "Min"),
+            _float_val(row, "90s"), goals, ast, ga,
+            _float_val(row, "Sh"), _float_val(row, "SoT"),
+            _float_val(row, "Saves"), _float_val(row, "CS"),
+            _float_val(row, "CrdY"), _float_val(row, "CrdR"),
+            _float_val(row, "Crs"), _float_val(row, "Int"), _float_val(row, "TklW"),
+            _float_val(row, "+/-"), _float_val(row, "PPM"),
+            source_name, now,
+        ))
+    return rows
 
 
 def _load_player_stats(conn: sqlite3.Connection) -> None:
-    """Load players_data_2025_2026.csv into raw_player_stats (skips if already loaded)."""
-    if not PLAYERS_CSV.exists():
-        logger.info("Players CSV not found at %s — skipping player stats load.", PLAYERS_CSV)
-        return
+    """
+    Load WC merged player stats CSV into raw_player_stats.
+    Prefers datasets/squads/wc_players_with_stats.csv; reloads when that file exists.
+    """
+    import datetime as _dt
 
-    existing = conn.execute("SELECT COUNT(*) FROM raw_player_stats").fetchone()[0]
-    if existing > 0:
-        logger.info(
-            "raw_player_stats already has %d rows — skipping reload.", existing
-        )
+    csv_path = _find_players_csv()
+    if csv_path is None:
+        logger.info("No player stats CSV found — skipping raw_player_stats load.")
         return
 
     try:
-        df = pd.read_csv(PLAYERS_CSV)
+        df = pd.read_csv(csv_path)
     except Exception as exc:
-        logger.warning("Failed to read players CSV: %s", exc)
+        logger.warning("Failed to read player stats CSV %s: %s", csv_path, exc)
         return
 
     df.columns = [c.strip() for c in df.columns]
-
-    import datetime as _dt
-    import unicodedata as _uni
-    import re as _re
-
-    def _norm(name: str) -> str:
-        if not isinstance(name, str):
-            return ""
-        nfkd = _uni.normalize("NFKD", name)
-        ascii_s = nfkd.encode("ascii", "ignore").decode("ascii").lower()
-        clean = _re.sub(r"[^a-z0-9\s]", " ", ascii_s)
-        return _re.sub(r"\s+", " ", clean).strip()
-
     now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-    rows = []
-    for idx, row in df.iterrows():
-        player = row.get("Player", "")
-        if not isinstance(player, str) or not player.strip():
-            continue
-        code, team = _parse_nation_code(str(row.get("Nation", "")))
 
-        def _n(col: str) -> float | None:
-            v = row.get(col)
-            try:
-                f = float(v)
-                return None if (f != f) else f  # NaN check
-            except (TypeError, ValueError):
-                return None
+    is_wc = "player_name" in df.columns or "stats_league" in df.columns
+    if is_wc:
+        rows = _rows_from_wc_csv(df, csv_path.name, now)
+    else:
+        rows = _rows_from_fbref_csv(df, csv_path.name, now)
 
-        rows.append((
-            f"ps_{idx}",
-            player.strip(),
-            _norm(player),
-            code, team,
-            str(row.get("Pos",   "")).strip(),
-            str(row.get("Squad", "")).strip(),
-            str(row.get("Comp",  "")).strip(),
-            _n("Age"), _n("MP"), _n("Starts"), _n("Min"), _n("90s"),
-            _n("Gls"), _n("Ast"), _n("Sh"), _n("SoT"),
-            _n("Saves"), _n("CS"), _n("CrdY"), _n("CrdR"),
-            _n("Crs"), _n("Int"), _n("TklW"), _n("+/-"), _n("PPM"),
-            _player_league_weight(str(row.get("Comp", ""))),
-            PLAYERS_CSV.name, now,
-        ))
+    if not rows:
+        logger.warning("Player stats CSV parsed to 0 rows.")
+        return
 
+    _migrate_player_stats_schema(conn)
+
+    # Reload WC/merged file each cycle so updated stats are reflected
+    if is_wc:
+        conn.execute("DELETE FROM raw_player_stats")
+        conn.commit()
+
+    placeholders = ", ".join("?" * len(_PLAYER_STATS_COLS))
     conn.executemany(
-        "INSERT OR IGNORE INTO raw_player_stats "
-        "(id, player_name, normalized_player_name, nation_code, national_team, "
-        " position, club, league, age, appearances, starts, minutes, nineties, "
-        " goals, assists, shots, shots_on_target, saves, clean_sheets, "
-        " yellow_cards, red_cards, crosses, interceptions, tackles_won, "
-        " plus_minus, points_per_match, league_weight, source_file, collected_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-        "        ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        f"INSERT OR REPLACE INTO raw_player_stats ({', '.join(_PLAYER_STATS_COLS)}) "
+        f"VALUES ({placeholders})",
         rows,
     )
     conn.commit()
+
+    teams = {r[3] for r in rows if r[3]}
+    leagues = {r[7] for r in rows if r[7]}
+    unknown_codes = [r[4] for r in rows if r[4] == "" and r[3]]
     logger.info(
-        "raw_player_stats: inserted %d rows from %s.",
-        len(rows), PLAYERS_CSV.name,
+        "raw_player_stats: loaded %d rows from %s — %d national teams, %d leagues.",
+        len(rows), csv_path.name, len(teams), len(leagues),
     )
+    if unknown_codes:
+        logger.warning(
+            "%d rows have no nation_code mapping (team name still stored).",
+            len(unknown_codes),
+        )
+    per_team = {}
+    for r in rows:
+        per_team[r[3]] = per_team.get(r[3], 0) + 1
+    top = sorted(per_team.items(), key=lambda x: -x[1])[:5]
+    bot = sorted(per_team.items(), key=lambda x: x[1])[:5]
+    logger.info("Players per team (top): %s", top)
+    logger.info("Players per team (bottom): %s", bot)
 
 
 def _load_manual_squads(conn: sqlite3.Connection) -> None:

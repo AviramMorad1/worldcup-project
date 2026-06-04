@@ -26,8 +26,15 @@ from sklearn.metrics import (
     f1_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+
+from features import augment_symmetric_matches
 
 DB_PATH    = "/app/data/worldcup.db"
+
+CLASS_LABELS = [0, 1, 2]
+CLASS_NAMES = {0: "B wins", 1: "Draw", 2: "A wins"}
+PROBA_CLASS_ORDER = "index 0=team_b win, 1=draw, 2=team_a win"
 MODEL_DIR  = Path("/app/data/models")
 MODEL_PATH = MODEL_DIR / "model.pkl"
 METRICS_PATH = MODEL_DIR / "metrics.json"
@@ -205,7 +212,8 @@ def _evaluate_baseline(
     y_pred_base = X_test["rank_diff"].apply(_baseline_predict)
     acc  = float(accuracy_score(y_test, y_pred_base))
     f1   = float(f1_score(y_test, y_pred_base, average="macro", zero_division=0))
-    cm   = confusion_matrix(y_test, y_pred_base).tolist()
+    cm   = confusion_matrix(y_test, y_pred_base, labels=CLASS_LABELS).tolist()
+    base_dist = _class_distribution(y_pred_base, "Ranking baseline")
     logger.info(
         "Ranking baseline — accuracy=%.4f, f1_macro=%.4f", acc, f1
     )
@@ -213,6 +221,7 @@ def _evaluate_baseline(
         "accuracy": acc,
         "f1_macro": f1,
         "confusion_matrix": cm,
+        "predicted_class_distribution": base_dist,
     }
 
 
@@ -221,17 +230,67 @@ def _evaluate_baseline(
 # ---------------------------------------------------------------------------
 
 
+def _model_classes(model) -> list[int]:
+    if hasattr(model, "classes_"):
+        return [int(c) for c in model.classes_]
+    base = getattr(model, "estimator", None) or getattr(model, "base_estimator", None)
+    if base is not None and hasattr(base, "classes_"):
+        return [int(c) for c in base.classes_]
+    return CLASS_LABELS
+
+
+def _class_distribution(y_pred: np.ndarray | pd.Series, title: str) -> dict[str, int]:
+    counts = pd.Series(y_pred).value_counts()
+    dist = {
+        CLASS_NAMES.get(int(k), str(k)): int(v)
+        for k, v in counts.items()
+    }
+    logger.info("%s predicted class distribution: %s", title, dist)
+    return dist
+
+
+def _merge_sample_weights(
+    y: pd.Series,
+    recency_weight: pd.Series | None,
+) -> np.ndarray:
+    """Combine recency weights with inverse-frequency class weights for XGB."""
+    classes = np.array(sorted(y.unique()))
+    cw = compute_class_weight("balanced", classes=classes, y=y.values)
+    class_map = {int(c): float(w) for c, w in zip(classes, cw)}
+    weights = np.array([class_map[int(label)] for label in y.values], dtype=float)
+    if recency_weight is not None:
+        weights = weights * recency_weight.values.astype(float)
+    logger.info(
+        "XGB sample weights: class_weight balanced %s",
+        {CLASS_NAMES.get(int(c), c): round(class_map[int(c)], 3) for c in classes},
+    )
+    return weights
+
+
 def _evaluate(model, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
     y_pred = model.predict(X_test)
     acc  = float(accuracy_score(y_test, y_pred))
     f1   = float(f1_score(y_test, y_pred, average="macro", zero_division=0))
-    cm   = confusion_matrix(y_test, y_pred).tolist()
-    report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+    cm   = confusion_matrix(y_test, y_pred, labels=CLASS_LABELS).tolist()
+    report = classification_report(
+        y_test, y_pred, labels=CLASS_LABELS, output_dict=True, zero_division=0
+    )
+    pred_dist = _class_distribution(y_pred, "Test set")
+    n_pred_classes = len(pd.Series(y_pred).unique())
+    single_class = n_pred_classes <= 1
+    if single_class:
+        logger.warning(
+            "Model collapsed to a single predicted class on the test set — "
+            "check augmentation and class balance."
+        )
     return {
         "accuracy": acc,
         "f1_macro": f1,
         "confusion_matrix": cm,
         "classification_report": report,
+        "predicted_class_distribution": pred_dist,
+        "predicted_class_count": n_pred_classes,
+        "single_class_collapse": single_class,
     }
 
 
@@ -317,13 +376,23 @@ def train_models(
      sw_train, sw_test, split_method, train_years) = _split_data(
         X, y, years, sample_weight
     )
-    logger.info("Training rows: %d | Test rows: %d", len(X_train), len(X_test))
+    logger.info("Training rows (pre-augment): %d | Test rows: %d", len(X_train), len(X_test))
     logger.info("Features: %s", list(X.columns))
+    test_label_dist = {
+        CLASS_NAMES.get(int(k), str(k)): int(v)
+        for k, v in y_test.value_counts().items()
+    }
+    logger.info("Test set label distribution: %s", test_label_dist)
+
+    X_train, y_train, sw_train = augment_symmetric_matches(
+        X_train, y_train, sw_train
+    )
+    logger.info("Training rows (post-augment): %d", len(X_train))
 
     model_results: dict[str, dict] = {}
     trained_models: dict[str, object] = {}
 
-    # ── Baseline evaluation ─────────────────────────────────────────────
+    # ── Baseline evaluation (unaugmented test features) ─────────────────
     baseline_metrics = _evaluate_baseline(X_train, X_test, y_test)
 
     # ── RandomForestClassifier ──────────────────────────────────────────
@@ -338,8 +407,14 @@ def train_models(
     if sw_train is not None:
         fit_kw["sample_weight"] = sw_train.values
     rf.fit(X_train, y_train, **fit_kw)
+    logger.info("RandomForest classes_: %s (%s)", list(rf.classes_), PROBA_CLASS_ORDER)
 
     rf_cal, rf_calibrated = _try_calibrate(rf, X_train, y_train, sw_train)
+    logger.info(
+        "Calibrated RF classes_: %s — predict_proba columns map to %s",
+        _model_classes(rf_cal),
+        PROBA_CLASS_ORDER,
+    )
     rf_metrics = _evaluate(rf_cal, X_test, y_test)
     rf_metrics["calibrated"] = rf_calibrated
     model_results["RandomForestClassifier"] = rf_metrics
@@ -368,12 +443,12 @@ def train_models(
             colsample_bytree=0.8,
             reg_lambda=2.0,
         )
-        xgb_fit_kw: dict = {}
-        if sw_train is not None:
-            xgb_fit_kw["sample_weight"] = sw_train.values
-        xgb.fit(X_train, y_train, **xgb_fit_kw)
+        xgb_weights = _merge_sample_weights(y_train, sw_train)
+        xgb.fit(X_train, y_train, sample_weight=xgb_weights)
+        logger.info("XGBClassifier classes_: %s (%s)", list(xgb.classes_), PROBA_CLASS_ORDER)
 
         xgb_cal, xgb_calibrated = _try_calibrate(xgb, X_train, y_train, sw_train)
+        logger.info("Calibrated XGB classes_: %s", _model_classes(xgb_cal))
         xgb_metrics = _evaluate(xgb_cal, X_test, y_test)
         xgb_metrics["calibrated"] = xgb_calibrated
         model_results["XGBClassifier"] = xgb_metrics
@@ -406,13 +481,20 @@ def train_models(
         baseline_metrics.get("accuracy") or 0,
         baseline_metrics.get("f1_macro") or "N/A",
     )
-    if (baseline_metrics.get("accuracy") or 0) >= best_metrics["accuracy"]:
+    base_f1 = baseline_metrics.get("f1_macro") or 0.0
+    if base_f1 >= best_metrics["f1_macro"]:
         logger.warning(
-            "ML model does NOT outperform the ranking baseline "
-            "(model=%.4f, baseline=%.4f). "
-            "Consider adding more data or features.",
+            "ML model does NOT beat ranking baseline on f1_macro "
+            "(model f1=%.4f, baseline f1=%.4f; model acc=%.4f, baseline acc=%.4f).",
+            best_metrics["f1_macro"],
+            base_f1,
             best_metrics["accuracy"],
             baseline_metrics.get("accuracy") or 0,
+        )
+    if best_metrics.get("single_class_collapse"):
+        logger.warning(
+            "Best model (%s) predicts only one class on the test set.",
+            best_name,
         )
     logger.info(
         "Confusion matrix (%s):\n%s",
@@ -458,6 +540,15 @@ def train_models(
         "split_method": split_method,
         "features": list(X.columns),
         "models": model_results,
+        "class_order": _model_classes(best_model),
+        "proba_mapping": PROBA_CLASS_ORDER,
+        "symmetric_augmentation": True,
+        "test_label_distribution": test_label_dist,
+        "predicted_class_distribution": best_metrics.get(
+            "predicted_class_distribution", {}
+        ),
+        "single_class_collapse": best_metrics.get("single_class_collapse", False),
+        "ml_beats_baseline_f1": base_f1 < best_metrics["f1_macro"],
     }
 
 

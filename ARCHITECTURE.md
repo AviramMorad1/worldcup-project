@@ -151,8 +151,16 @@ Failed cycles are logged and the service continues on the next interval.
 **Output tables:**
 - `team_elo` (team, year, elo_rating) — computed and stored for feature reuse
 - `model_metrics` (run_at, model_name, accuracy, f1_macro, notes)
-- `match_predictions` (team_a, team_b, stage, predicted_winner, confidence, run_at)
-  — pre-filled with 2026 group stage matchups
+- `match_predictions` — 2026 group stage predictions with baseline and adjusted probabilities,
+  squad strength metadata, confidence bands, and explanations
+- `raw_player_stats` — current-season club stats for WC players (collector; not used in historical training)
+- `team_squad_strength` — per-team 2026 squad scores with coverage tiers and FIFA fallback blend
+- `datasets/league_strengths.csv` — league quality weights from `datasets/global_national_league_rankings.csv` (global ranking) via `scripts/build_league_strengths.py`, with Wikipedia/static fallback
+
+**2026 prediction flow (trainer):**
+1. Baseline `predict_proba` from trained model (rank/ELO/H2H/host/current FIFA only).
+2. `squad_features.compute_team_squad_strength()` from `raw_player_stats` (2026 adjustment only).
+3. `apply_squad_adjustment()` conservatively shifts probabilities; stores base vs adjusted columns.
 
 **Key libraries:** `scikit-learn`, `xgboost`, `pandas`, `joblib`
 

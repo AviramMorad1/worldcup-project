@@ -9,6 +9,7 @@ COPY features.py .
 COPY model.py .
 COPY predictions.py .
 COPY squad_features.py .
+COPY league_weights.py .
 COPY main.py .
 
 CMD ["python", "main.py"]

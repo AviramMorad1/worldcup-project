@@ -227,32 +227,29 @@ the baseline, the dashboard warns you.
 
 ---
 
-## Optional Squad / Player Strength Features
+## 2026 Prediction Architecture (Baseline + Squad Adjustment)
 
-The project can optionally use current 2025/2026 club-season player stats to compute a
-**squad strength score** (0–100) per national team, used as a conservative additional signal.
+**Final prediction** = historical/ranking baseline model **+** conservative current-squad adjustment.
 
-**How it works:**
-1. `players_data_2025_2026.csv` (top 5 European leagues, ~2,839 players) is loaded into `raw_player_stats`
-2. FBref nation codes (`us USA`, `fr FRA`, etc.) are mapped to national team names
-3. A team score is computed from positional stats (attack/mid/defense/GK), playing time,
-   league quality, and production (goals + assists)
-4. Score is used to apply a **conservative probability adjustment** to 2026 predictions
-   (max ±2% by default, configurable via `MAX_SQUAD_PROBA_ADJUSTMENT`)
+1. **Baseline model** (trained on World Cup 1930–2018, tested on 2022) outputs win/draw/loss probabilities from FIFA rank, ELO, H2H, host flags, and current FIFA points. **Player stats are not training features.**
+2. **Squad adjustment** (2026 only) uses `team_squad_strength.final_squad_strength` to nudge probabilities (max ±8% when both teams have high stat coverage; as low as ±2% when coverage is very low).
 
-**Important limitations:**
-- Only covers players in the top 5 European leagues (some WC 2026 teams have 0 players there)
-- Club season stats are a proxy — not actual national team performance
-- Squad rosters may not reflect final WC selections
-- Injury data is not available in this dataset
-- Teams with low coverage (Curaçao, Cabo Verde, etc.) are not adjusted
+**Recommended conceptual weighting:** FIFA/current ranking ~40–45%; squad/player strength ~20–30%; historical WC/ELO ~20–25%; host/H2H/stage ~5–10%.
 
-**Squad data files:**
-- `datasets/players_data_2025_2026.csv` — required for squad features
-- `datasets/national_team_squads.csv` — optional manual squad roster (columns: team, player_name, position, age, club, league, is_key_player, is_injured)
-- `FOOTBALL_DATA_API_TOKEN` — optional API token for football-data.org (squad endpoints require paid tier)
+### League strength weights
 
-**To disable squad features:**
-```
-SQUAD_FEATURES_ENABLED=false
-```
+Run `python scripts/build_league_strengths.py` to build `datasets/league_strengths.csv`. **Primary source:** `datasets/global_national_league_rankings.csv` (global national-league ranking — UEFA, CONMEBOL, AFC, CAF, CONCACAF). Place your file there or keep `The Strongest National League in the World.csv` on the desktop; the script maps each country to its domestic league and scales `strength_weight` from Points (0.45–1.00). **Backup:** Hebrew Wikipedia UEFA table, then static fallback if both are missing.
+
+### Player stats and missing data
+
+- Primary file: `datasets/squads/wc_players_with_stats.csv` (~900 of ~1200 expected WC players).
+- Collector loads into `raw_player_stats` with per-player `league_weight`.
+- **Missing players are missing data, not weak players.** Coverage tiers control FIFA-ranking fallback blending.
+
+**Squad strength formula (computed score, before FIFA blend):** 35% playing time, 25% league quality, 20% position production, 10% international experience, 10% depth/coverage.
+
+**Env vars:** `SQUAD_FEATURES_ENABLED`, `SQUAD_ADJUSTMENT_ENABLED`, `MAX_SQUAD_PROBA_ADJUSTMENT=0.08`
+
+**Limitations:** incomplete stats; club-season ≠ national-team form; squads may change; heuristic league weights; conservative adjustment.
+
+**To disable:** `SQUAD_ADJUSTMENT_ENABLED=false` or `SQUAD_FEATURES_ENABLED=false`

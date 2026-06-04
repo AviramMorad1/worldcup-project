@@ -89,16 +89,30 @@ def _migrate_match_predictions(conn: sqlite3.Connection) -> None:
     rows = conn.execute("PRAGMA table_info(match_predictions)").fetchall()
     existing = {row[1] for row in rows}
     migrations = [
-        ("confidence_band",          "TEXT"),
-        ("explanation",              "TEXT"),
-        ("key_factors",              "TEXT"),
-        # Squad-strength columns (always created; NULL when squad data not available)
-        ("squad_strength_a",         "REAL"),
-        ("squad_strength_b",         "REAL"),
-        ("squad_strength_diff",      "REAL"),
+        ("confidence_band", "TEXT"),
+        ("explanation", "TEXT"),
+        ("key_factors", "TEXT"),
+        ("base_team_a_proba", "REAL"),
+        ("base_draw_proba", "REAL"),
+        ("base_team_b_proba", "REAL"),
+        ("adjusted_team_a_proba", "REAL"),
+        ("adjusted_draw_proba", "REAL"),
+        ("adjusted_team_b_proba", "REAL"),
+        ("squad_strength_a", "REAL"),
+        ("squad_strength_b", "REAL"),
+        ("squad_strength_diff", "REAL"),
+        ("squad_coverage_a", "REAL"),
+        ("squad_coverage_b", "REAL"),
+        ("squad_coverage_tier_a", "TEXT"),
+        ("squad_coverage_tier_b", "TEXT"),
+        ("squad_adjustment_amount", "REAL"),
         ("squad_adjustment_applied", "INTEGER"),
-        ("raw_model_confidence",     "REAL"),
-        ("squad_adjusted_confidence","REAL"),
+        ("raw_model_confidence", "REAL"),
+        ("adjusted_confidence", "REAL"),
+        ("squad_adjusted_confidence", "REAL"),
+        ("combined_strength_signal", "REAL"),
+        ("confidence_boost_amount", "REAL"),
+        ("confidence_cap_applied", "REAL"),
     ]
     for col, col_type in migrations:
         if col not in existing:
@@ -107,6 +121,55 @@ def _migrate_match_predictions(conn: sqlite3.Connection) -> None:
             )
             conn.commit()
             logger.info("match_predictions: added column '%s'.", col)
+
+
+def _log_match_predictions_verification(conn: sqlite3.Connection) -> None:
+    """Log squad column population after INSERT so dashboard issues are diagnosable."""
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN squad_strength_a IS NOT NULL
+                      AND squad_strength_b IS NOT NULL THEN 1 ELSE 0 END) AS with_squad,
+            SUM(CASE WHEN squad_adjustment_applied = 1 THEN 1 ELSE 0 END) AS adjusted,
+            AVG(ABS(squad_adjustment_amount)) AS avg_abs_adj
+        FROM match_predictions
+        WHERE tournament_year = 2026
+        """
+    ).fetchone()
+    if not row or row[0] == 0:
+        logger.warning("match_predictions verification: no 2026 rows stored.")
+        return
+    total, with_squad, adjusted, avg_abs_adj = row
+    logger.info(
+        "match_predictions verification: %d rows, %d with squad values, "
+        "%d adjusted, avg_abs_adjustment=%.4f",
+        total,
+        with_squad or 0,
+        adjusted or 0,
+        float(avg_abs_adj or 0.0),
+    )
+    sample = conn.execute(
+        """
+        SELECT team_a, team_b, squad_strength_a, squad_strength_b,
+               adjusted_confidence, squad_adjusted_confidence
+        FROM match_predictions
+        WHERE tournament_year = 2026
+          AND squad_strength_a IS NOT NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if sample:
+        adj_conf = sample[4] if sample[4] is not None else sample[5]
+        logger.info(
+            "match_predictions sample: %s vs %s — squad_a=%.1f, squad_b=%.1f, "
+            "adjusted_confidence=%.3f",
+            sample[0],
+            sample[1],
+            sample[2],
+            sample[3],
+            float(adj_conf or 0.0),
+        )
 
 
 def create_match_predictions_table() -> None:
@@ -292,6 +355,297 @@ def _confidence_band(conf: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 2026 combined-signal confidence calibration (post-baseline model only)
+# ---------------------------------------------------------------------------
+
+_GROUP_STAGE_MAX_CONF = 0.88
+_ORDINARY_WINNER_CAP = 0.82
+_STRONG_AGREEMENT_CAP = 0.86
+_MIN_DRAW_PROBA = 0.12
+_PROBA_FLOOR = 0.01
+
+
+def _clip(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _team_has_current_ranking(rankings_df: pd.DataFrame, team: str) -> bool:
+    return _get_current_rank(rankings_df, team) < RANK_DEFAULT
+
+
+def _combined_strength_signal(
+    feat: dict,
+    squad_diff: float,
+    rankings_df: pd.DataFrame,
+    team_a: str,
+    team_b: str,
+) -> float:
+    """Positive favors Team A; negative favors Team B."""
+    squad_signal = _clip(squad_diff / 35.0, -1.0, 1.0)
+    rank_signal = _clip((-feat["current_rank_diff"]) / 80.0, -1.0, 1.0)
+    points_signal = _clip(feat["current_points_diff"] / 400.0, -1.0, 1.0)
+    elo_signal = _clip(feat["elo_diff"] / 250.0, -1.0, 1.0)
+
+    rank_ok = (
+        _team_has_current_ranking(rankings_df, team_a)
+        and _team_has_current_ranking(rankings_df, team_b)
+    )
+    pts_a = _get_current_points(rankings_df, team_a)
+    pts_b = _get_current_points(rankings_df, team_b)
+    points_ok = rank_ok and (pts_a > 0 or pts_b > 0)
+
+    components: list[tuple[float, float]] = [(0.35, squad_signal)]
+    if rank_ok:
+        components.append((0.35, rank_signal))
+    if points_ok:
+        components.append((0.20, points_signal))
+    components.append((0.10, elo_signal))
+
+    total_w = sum(w for w, _ in components)
+    if total_w <= 0:
+        return 0.0
+    return sum((w / total_w) * sig for w, sig in components)
+
+
+def _coverage_boost_multiplier(
+    tier_a: str,
+    tier_b: str,
+    predicted_winner: str,
+    team_a: str,
+    team_b: str,
+) -> float:
+    """
+    Scale boost by data quality. Underdog Very Low coverage should not fully
+    mute a boost when the predicted winner has solid squad data.
+    """
+    if predicted_winner == "Draw":
+        return 0.0
+
+    winner_tier = (
+        tier_a if predicted_winner == team_a
+        else tier_b if predicted_winner == team_b
+        else "Unknown"
+    )
+    loser_tier = (
+        tier_b if predicted_winner == team_a
+        else tier_a if predicted_winner == team_b
+        else "Unknown"
+    )
+
+    if winner_tier == "Very Low":
+        return 0.0
+    if winner_tier == "Low":
+        return 0.35
+
+    if winner_tier in ("High", "Medium"):
+        if loser_tier == "Very Low":
+            return 0.75
+        if loser_tier == "Low":
+            return 0.85
+        if loser_tier in ("High", "Medium"):
+            return 1.0
+        return 0.60
+
+    if loser_tier == "Very Low":
+        return 0.35
+    if "Low" in (winner_tier, loser_tier):
+        return 0.60
+    return 1.0
+
+
+def _max_boost_from_favorite_signal(favorite_signal: float) -> float:
+    fs = abs(favorite_signal)
+    if fs >= 0.75:
+        return 0.14
+    if fs >= 0.50:
+        return 0.10
+    if fs >= 0.30:
+        return 0.06
+    return 0.03
+
+
+def _signals_agree_with_winner(
+    combined: float,
+    predicted_winner: str,
+    team_a: str,
+    team_b: str,
+) -> bool:
+    if predicted_winner == "Draw":
+        return False
+    if predicted_winner == team_a:
+        return combined > 0.08
+    if predicted_winner == team_b:
+        return combined < -0.08
+    return False
+
+
+def _winner_index(predicted_winner: str, team_a: str, team_b: str) -> int | None:
+    if predicted_winner == team_a:
+        return 2
+    if predicted_winner == team_b:
+        return 0
+    if predicted_winner == "Draw":
+        return 1
+    return None
+
+
+def _renormalize_proba(proba: list[float]) -> list[float]:
+    p = [max(_PROBA_FLOOR, float(x)) for x in proba]
+    total = sum(p)
+    if total <= 0:
+        return [1 / 3, 1 / 3, 1 / 3]
+    return [x / total for x in p]
+
+
+def _winner_probability_cap(
+    combined_abs: float,
+    feat: dict,
+    squad_diff: float,
+) -> float:
+    rank_gap = abs(feat["current_rank_diff"])
+    huge_agreement = (
+        combined_abs >= 0.75
+        and rank_gap >= 40
+        and abs(squad_diff) >= 20
+        and abs(feat["elo_diff"]) >= 80
+    )
+    cap = _STRONG_AGREEMENT_CAP if huge_agreement else _ORDINARY_WINNER_CAP
+    return min(_GROUP_STAGE_MAX_CONF, cap)
+
+
+def _apply_boost_to_winner(
+    proba: list[float],
+    winner_idx: int,
+    boost: float,
+    base_draw: float,
+) -> list[float]:
+    if boost <= 0 or winner_idx is None:
+        return list(proba)
+
+    p = [float(x) for x in proba]
+    min_draw = base_draw if base_draw < _MIN_DRAW_PROBA else _MIN_DRAW_PROBA
+    p[winner_idx] += boost
+    remaining = boost
+
+    for idx in (0, 1, 2):
+        if idx == winner_idx or remaining <= 1e-9:
+            continue
+        if idx == 1:
+            can_take = max(0.0, p[idx] - min_draw)
+        else:
+            can_take = max(0.0, p[idx] - _PROBA_FLOOR)
+        take = min(can_take, remaining)
+        p[idx] -= take
+        remaining -= take
+
+    if remaining > 1e-9:
+        for idx in (0, 1, 2):
+            if idx == winner_idx:
+                continue
+            can_take = max(0.0, p[idx] - (_PROBA_FLOOR if idx != 1 else min_draw))
+            take = min(can_take, remaining)
+            p[idx] -= take
+            remaining -= take
+
+    return _renormalize_proba(p)
+
+
+def _cap_winner_probability(
+    proba: list[float],
+    winner_idx: int,
+    cap: float,
+) -> tuple[list[float], float]:
+    p = list(proba)
+    if p[winner_idx] <= cap:
+        return p, cap
+    excess = p[winner_idx] - cap
+    p[winner_idx] = cap
+    others = [i for i in range(3) if i != winner_idx]
+    pool = sum(p[i] for i in others)
+    if pool > 0:
+        for i in others:
+            p[i] += excess * (p[i] / pool)
+    return _renormalize_proba(p), cap
+
+
+def calibrate_2026_probabilities(
+    base_proba: list[float],
+    feat: dict,
+    team_a: str,
+    team_b: str,
+    predicted_winner: str,
+    squad_diff: float,
+    tier_a: str,
+    tier_b: str,
+    rankings_df: pd.DataFrame,
+    squad_data_ok: bool,
+) -> tuple[list[float], dict]:
+    """
+    Post-model calibration: agreement-based boost from squad + FIFA + ELO signals.
+
+    Returns (adjusted_proba, metadata dict).
+    proba order: [team_b, draw, team_a].
+    """
+    meta: dict = {
+        "combined_strength_signal": 0.0,
+        "confidence_boost_amount": 0.0,
+        "confidence_cap_applied": _ORDINARY_WINNER_CAP,
+        "squad_adjustment_amount": 0.0,
+        "squad_adjustment_applied": 0,
+        "signals_agree": False,
+    }
+    if len(base_proba) != 3:
+        return list(base_proba), meta
+
+    proba = list(base_proba)
+    base_draw = float(base_proba[1])
+    winner_idx = _winner_index(predicted_winner, team_a, team_b)
+
+    if not squad_data_ok:
+        return proba, meta
+
+    combined = _combined_strength_signal(
+        feat, squad_diff, rankings_df, team_a, team_b
+    )
+    meta["combined_strength_signal"] = round(combined, 4)
+
+    agrees = _signals_agree_with_winner(combined, predicted_winner, team_a, team_b)
+    meta["signals_agree"] = agrees
+
+    if not agrees or winner_idx is None or winner_idx == 1:
+        return proba, meta
+
+    favorite_signal = abs(combined)
+    max_boost = _max_boost_from_favorite_signal(favorite_signal)
+    cov_mult = _coverage_boost_multiplier(
+        tier_a, tier_b, predicted_winner, team_a, team_b
+    )
+    boost = max_boost * cov_mult
+
+    if boost < 1e-6:
+        return proba, meta
+
+    before_winner = proba[winner_idx]
+    proba = _apply_boost_to_winner(proba, winner_idx, boost, base_draw)
+    meta["confidence_boost_amount"] = round(proba[winner_idx] - before_winner, 6)
+    meta["squad_adjustment_amount"] = meta["confidence_boost_amount"]
+    meta["squad_adjustment_applied"] = 1
+
+    cap = _winner_probability_cap(favorite_signal, feat, squad_diff)
+    meta["confidence_cap_applied"] = cap
+    proba, applied_cap = _cap_winner_probability(proba, winner_idx, cap)
+    meta["confidence_cap_applied"] = applied_cap
+
+    if max(proba) > _GROUP_STAGE_MAX_CONF:
+        proba, _ = _cap_winner_probability(
+            proba, int(max(range(3), key=lambda i: proba[i])), _GROUP_STAGE_MAX_CONF
+        )
+        meta["confidence_cap_applied"] = _GROUP_STAGE_MAX_CONF
+
+    return proba, meta
+
+
+# ---------------------------------------------------------------------------
 # Human-readable explanation
 # ---------------------------------------------------------------------------
 
@@ -305,6 +659,16 @@ def _build_explanation(
     rankings_df: pd.DataFrame,
     elo_map: dict[str, float],
     matches_df: pd.DataFrame,
+    squad_a: float | None = None,
+    squad_b: float | None = None,
+    tier_a: str = "",
+    tier_b: str = "",
+    adj_amount: float = 0.0,
+    adj_applied: bool = False,
+    combined_signal: float = 0.0,
+    boost_amount: float = 0.0,
+    cap_applied: float = _ORDINARY_WINNER_CAP,
+    signals_agree: bool = False,
 ) -> tuple[str, str]:
     """Return (explanation, key_factors) as short human-readable strings."""
     rank_a = _get_current_rank(rankings_df, team_a)
@@ -349,6 +713,31 @@ def _build_explanation(
             f"Limited WC history for {', '.join(missing_names)} — confidence less reliable"
         )
 
+    if squad_a is not None and squad_b is not None and squad_a > 0:
+        factors.append(
+            f"Squad strength: {team_a} {squad_a:.0f}/100 vs {team_b} {squad_b:.0f}/100"
+        )
+        if tier_a in ("Low", "Very Low") or tier_b in ("Low", "Very Low"):
+            low_teams = [
+                t for t, tier in ((team_a, tier_a), (team_b, tier_b))
+                if tier in ("Low", "Very Low")
+            ]
+            factors.append(
+                f"Low player-stat coverage ({', '.join(low_teams)}); "
+                "missing players treated as unknown"
+            )
+    if adj_applied and abs(boost_amount) >= 0.005:
+        factors.append(
+            f"Confidence boost: +{abs(boost_amount)*100:.1f}pp toward {predicted_winner}"
+        )
+    if abs(combined_signal) >= 0.05:
+        favored_side = team_a if combined_signal > 0 else team_b
+        factors.append(
+            f"Combined strength signal: {combined_signal:+.2f} (favors {favored_side})"
+        )
+    if cap_applied < _GROUP_STAGE_MAX_CONF + 0.001:
+        factors.append(f"Confidence cap: {cap_applied:.0%} max for group stage")
+
     key_factors = "; ".join(factors)
 
     favored = predicted_winner if predicted_winner != "Draw" else "neither team"
@@ -372,6 +761,35 @@ def _build_explanation(
             + ("⚠️ Interpret carefully: limited historical data for one or both teams."
                if (a_missing or b_missing) else "")
         ).strip()
+        if squad_a is not None and squad_b is not None:
+            if tier_a in ("Low", "Very Low") or tier_b in ("Low", "Very Low"):
+                expl += (
+                    " Low player-stat coverage: squad influence was reduced and "
+                    "FIFA-ranking fallback blended into squad scores."
+                )
+            elif abs(squad_a - squad_b) > 5:
+                stronger = team_a if squad_a > squad_b else team_b
+                expl += (
+                    f" Current squad profile favors {stronger} "
+                    f"(active players, league quality, production)."
+                )
+        if predicted_winner != "Draw" and signals_agree and boost_amount >= 0.05:
+            expl += (
+                f" {predicted_winner} receives higher adjusted confidence because "
+                f"the model, squad strength, and current ranking signals all favor "
+                f"{predicted_winner}. Confidence is capped at {cap_applied:.0%} to "
+                f"avoid overstatement."
+            )
+        elif predicted_winner != "Draw" and adj_applied and boost_amount >= 0.02:
+            expl += (
+                f" Adjusted confidence increased by "
+                f"{boost_amount*100:.1f} percentage points where signals aligned."
+            )
+        elif predicted_winner != "Draw":
+            expl += (
+                " Squad and ranking signals do not strongly agree, "
+                "so confidence remains moderate."
+            )
 
     return expl, key_factors
 
@@ -391,6 +809,17 @@ def run_2026_predictions() -> None:
 
     try:
         model = joblib.load(MODEL_PATH)
+        if hasattr(model, "classes_"):
+            logger.info(
+                "Loaded model classes_: %s — predict_proba: "
+                "[team_b=0, draw=1, team_a=2]",
+                list(model.classes_),
+            )
+        else:
+            logger.info(
+                "Loaded model has no classes_ attribute; "
+                "assuming proba order [team_b, draw, team_a]."
+            )
     except Exception as exc:
         logger.warning(
             "Failed to load model: %s — skipping 2026 predictions.", exc
@@ -423,7 +852,6 @@ def run_2026_predictions() -> None:
     squad_available = False
     try:
         from squad_features import (  # noqa: PLC0415
-            apply_squad_adjustment,
             explain_squad_strength,
             get_squad_strength_features,
             setup_squad_features,
@@ -432,9 +860,15 @@ def run_2026_predictions() -> None:
         if squad_available:
             logger.info("Squad strength features loaded — applying adjustment to predictions.")
         else:
-            logger.info("Squad strength not available — predictions use ML model only.")
-    except ImportError:
-        logger.debug("squad_features module not found — skipping squad adjustment.")
+            logger.warning(
+                "Squad strength not available — predictions will show empty squad "
+                "columns. Ensure collector loaded wc_players_with_stats.csv, then "
+                "re-run trainer."
+            )
+    except ImportError as exc:
+        logger.warning(
+            "squad_features import failed (%s) — skipping squad adjustment.", exc
+        )
     except Exception as exc:
         logger.warning("Squad features setup failed: %s — continuing without.", exc)
 
@@ -458,31 +892,7 @@ def run_2026_predictions() -> None:
                 proba = [0.33, 0.33, 0.34]
                 predicted_class, raw_confidence = 2, 0.34
 
-            # Squad adjustment
-            sq_a, sq_b, sq_diff = 0.0, 0.0, 0.0
-            adj_applied = 0
-            adj_confidence = raw_confidence
-
-            if squad_available:
-                try:
-                    sq_a, sq_b, sq_diff, sq_data_ok = get_squad_strength_features(
-                        team_a, team_b
-                    )
-                    adj_proba, adj_applied_bool = apply_squad_adjustment(
-                        proba, sq_a, sq_b, sq_data_ok
-                    )
-                    if adj_applied_bool:
-                        proba = adj_proba
-                        predicted_class = int(
-                            max(range(len(proba)), key=lambda i: proba[i])
-                        )
-                        adj_confidence  = float(max(proba))
-                        adj_applied     = 1
-                except Exception as exc:
-                    logger.warning(
-                        "Squad adjustment failed for %s vs %s: %s",
-                        team_a, team_b, exc,
-                    )
+            base_proba = list(proba)
 
             if predicted_class == 2:
                 predicted_winner = team_a
@@ -491,58 +901,167 @@ def run_2026_predictions() -> None:
             else:
                 predicted_winner = "Draw"
 
+            sq_a, sq_b, sq_diff = 0.0, 0.0, 0.0
+            cov_a, cov_b = 0.0, 0.0
+            tier_a, tier_b = "", ""
+            adj_applied = 0
+            adj_amount = 0.0
+            boost_amount = 0.0
+            combined_signal = 0.0
+            cap_applied = _ORDINARY_WINNER_CAP
+            signals_agree = False
+            adj_confidence = raw_confidence
+            cal_meta: dict = {}
+
+            if squad_available:
+                try:
+                    (
+                        sq_a, sq_b, sq_diff, sq_ok,
+                        tier_a, tier_b, cov_a, cov_b, _, _,
+                    ) = get_squad_strength_features(team_a, team_b)
+                    proba, cal_meta = calibrate_2026_probabilities(
+                        base_proba,
+                        feat,
+                        team_a,
+                        team_b,
+                        predicted_winner,
+                        sq_diff,
+                        tier_a,
+                        tier_b,
+                        rankings_df,
+                        sq_ok,
+                    )
+                    adj_applied = cal_meta.get("squad_adjustment_applied", 0)
+                    adj_amount = cal_meta.get("squad_adjustment_amount", 0.0)
+                    boost_amount = cal_meta.get("confidence_boost_amount", 0.0)
+                    combined_signal = cal_meta.get("combined_strength_signal", 0.0)
+                    cap_applied = cal_meta.get(
+                        "confidence_cap_applied", _ORDINARY_WINNER_CAP
+                    )
+                    signals_agree = cal_meta.get("signals_agree", False)
+                    predicted_class = int(
+                        max(range(len(proba)), key=lambda i: proba[i])
+                    )
+                    if predicted_class == 2:
+                        predicted_winner = team_a
+                    elif predicted_class == 0:
+                        predicted_winner = team_b
+                    else:
+                        predicted_winner = "Draw"
+                    adj_confidence = float(max(proba))
+                except Exception as exc:
+                    logger.warning(
+                        "Confidence calibration failed for %s vs %s: %s",
+                        team_a, team_b, exc,
+                    )
+                    proba = list(base_proba)
+
             confidence = adj_confidence
             band = _confidence_band(confidence)
 
             expl, key_factors = _build_explanation(
                 team_a, team_b, feat, predicted_winner, confidence,
                 rankings_df, elo_map, matches_df,
+                squad_a=sq_a if squad_available else None,
+                squad_b=sq_b if squad_available else None,
+                tier_a=tier_a,
+                tier_b=tier_b,
+                adj_amount=adj_amount,
+                adj_applied=bool(adj_applied),
+                combined_signal=combined_signal,
+                boost_amount=boost_amount,
+                cap_applied=cap_applied,
+                signals_agree=signals_agree,
             )
 
-            # Append squad explanation
-            if squad_available and sq_a > 0:
+            if squad_available:
                 try:
-                    sq_expl = explain_squad_strength(team_a, team_b)
+                    sq_expl = explain_squad_strength(team_a, team_b, adj_amount)
                     if sq_expl:
-                        expl = expl.rstrip(".") + " " + sq_expl
+                        expl = expl.rstrip(".") + ". " + sq_expl
                 except Exception:
                     pass
 
-            prediction_rows.append((
-                2026, group_name, team_a, team_b,
-                "Group Stage", predicted_winner,
-                confidence, band, expl, key_factors, run_at,
-                round(sq_a, 2) if sq_a else None,
-                round(sq_b, 2) if sq_b else None,
-                round(sq_diff, 2) if sq_diff else None,
-                adj_applied,
-                round(raw_confidence, 6),
-                round(adj_confidence, 6),
-            ))
+            prediction_rows.append({
+                "tournament_year": 2026,
+                "group_name": group_name,
+                "team_a": team_a,
+                "team_b": team_b,
+                "stage": "Group Stage",
+                "predicted_winner": predicted_winner,
+                "confidence": confidence,
+                "confidence_band": band,
+                "explanation": expl,
+                "key_factors": key_factors,
+                "run_at": run_at,
+                "base_team_b_proba": round(base_proba[0], 6),
+                "base_draw_proba": round(base_proba[1], 6),
+                "base_team_a_proba": round(base_proba[2], 6),
+                "adjusted_team_b_proba": round(proba[0], 6),
+                "adjusted_draw_proba": round(proba[1], 6),
+                "adjusted_team_a_proba": round(proba[2], 6),
+                "squad_strength_a": round(sq_a, 2) if squad_available else None,
+                "squad_strength_b": round(sq_b, 2) if squad_available else None,
+                "squad_strength_diff": round(sq_diff, 2) if squad_available else None,
+                "squad_coverage_a": round(cov_a, 4) if squad_available else None,
+                "squad_coverage_b": round(cov_b, 4) if squad_available else None,
+                "squad_coverage_tier_a": tier_a or None,
+                "squad_coverage_tier_b": tier_b or None,
+                "squad_adjustment_amount": round(adj_amount, 6) if adj_applied else None,
+                "squad_adjustment_applied": adj_applied,
+                "raw_model_confidence": round(raw_confidence, 6),
+                "adjusted_confidence": round(adj_confidence, 6),
+                "squad_adjusted_confidence": round(adj_confidence, 6),
+                "combined_strength_signal": round(combined_signal, 4),
+                "confidence_boost_amount": round(boost_amount, 6) if adj_applied else None,
+                "confidence_cap_applied": round(cap_applied, 4),
+            })
 
     conn = _open_db()
     try:
+        _migrate_match_predictions(conn)
         conn.execute(
             "DELETE FROM match_predictions WHERE tournament_year = ?", (2026,)
         )
-        conn.executemany(
-            "INSERT INTO match_predictions"
-            " (tournament_year, group_name, team_a, team_b, stage,"
-            "  predicted_winner, confidence, confidence_band, explanation,"
-            "  key_factors, run_at, squad_strength_a, squad_strength_b,"
-            "  squad_strength_diff, squad_adjustment_applied,"
-            "  raw_model_confidence, squad_adjusted_confidence)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            prediction_rows,
+        existing_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(match_predictions)").fetchall()
+        }
+        base_cols = [
+            "tournament_year", "group_name", "team_a", "team_b", "stage",
+            "predicted_winner", "confidence", "confidence_band", "explanation",
+            "key_factors", "run_at",
+        ]
+        extra_cols = [
+            "base_team_b_proba", "base_draw_proba", "base_team_a_proba",
+            "adjusted_team_b_proba", "adjusted_draw_proba", "adjusted_team_a_proba",
+            "squad_strength_a", "squad_strength_b", "squad_strength_diff",
+            "squad_coverage_a", "squad_coverage_b",
+            "squad_coverage_tier_a", "squad_coverage_tier_b",
+            "squad_adjustment_amount", "squad_adjustment_applied",
+            "raw_model_confidence", "adjusted_confidence", "squad_adjusted_confidence",
+            "combined_strength_signal", "confidence_boost_amount",
+            "confidence_cap_applied",
+        ]
+        insert_cols = base_cols + [c for c in extra_cols if c in existing_cols]
+        placeholders = ", ".join("?" * len(insert_cols))
+        sql = (
+            f"INSERT INTO match_predictions ({', '.join(insert_cols)}) "
+            f"VALUES ({placeholders})"
         )
+        tuples = [
+            tuple(row.get(c) for c in insert_cols)
+            for row in prediction_rows
+        ]
+        conn.executemany(sql, tuples)
         conn.commit()
+        _log_match_predictions_verification(conn)
     finally:
         conn.close()
 
-    high   = sum(1 for r in prediction_rows if r[7] == "High")
-    medium = sum(1 for r in prediction_rows if r[7] == "Medium")
-    low    = sum(1 for r in prediction_rows if r[7] == "Low")
-    adj_count = sum(1 for r in prediction_rows if r[14] == 1)
+    high = sum(1 for r in prediction_rows if r["confidence_band"] == "High")
+    medium = sum(1 for r in prediction_rows if r["confidence_band"] == "Medium")
+    low = sum(1 for r in prediction_rows if r["confidence_band"] == "Low")
+    adj_count = sum(1 for r in prediction_rows if r.get("squad_adjustment_applied") == 1)
     logger.info(
         "Stored %d 2026 group stage predictions "
         "(High=%d, Medium=%d, Low=%d, squad_adj=%d).",

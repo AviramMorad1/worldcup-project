@@ -3,10 +3,11 @@ main.py
 -------
 Collector service entry point for the World Cup sentiment pipeline.
 
-Each collection cycle:
-  1. load_football_data()   — CSV → raw_matches / raw_rankings (skips if already loaded)
-  2. collect_reddit_data()  — RSS → raw_reddit_posts
-  3. write ready flag       — signals preprocessor that first cycle finished
+Each collection cycle (order matters for trainer/dashboard):
+  1. load_football_data()   — matches, rankings, player stats, squads (prediction inputs)
+  2. write prediction-ready flag — trainer may run 2026 predictions after this step
+  3. collect_reddit_data()  — RSS → raw_reddit_posts (sentiment; slower)
+  4. write collector ready flag — full cycle done for preprocessor
 """
 
 import json
@@ -25,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 COLLECTOR_READY_FLAG = "/app/data/collector_ready.flag"
+PREDICTION_READY_FLAG = "/app/data/prediction_ready.flag"
 DEFAULT_INTERVAL_HOURS = 168
 
 
@@ -42,15 +44,33 @@ def _collection_interval_seconds() -> int:
     return hours * 3600
 
 
-def write_collector_ready_flag(posts_collected: int) -> None:
-    """Write a marker file so downstream services know collection finished."""
-    payload = {
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-        "posts_collected_this_cycle": posts_collected,
-    }
-    with open(COLLECTOR_READY_FLAG, "w", encoding="utf-8") as fh:
+def _write_flag(path: str, payload: dict) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
-    logger.info("Collector ready flag written to %s", COLLECTOR_READY_FLAG)
+    logger.info("Flag written to %s", path)
+
+
+def write_prediction_ready_flag() -> None:
+    """Signal that match/ranking/player data for predictions is loaded."""
+    _write_flag(
+        PREDICTION_READY_FLAG,
+        {
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "stage": "football_data_loaded",
+        },
+    )
+
+
+def write_collector_ready_flag(posts_collected: int) -> None:
+    """Signal full collector cycle finished (football + Reddit)."""
+    _write_flag(
+        COLLECTOR_READY_FLAG,
+        {
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "posts_collected_this_cycle": posts_collected,
+            "stage": "full_cycle",
+        },
+    )
 
 
 def collection_run() -> None:
@@ -58,11 +78,18 @@ def collection_run() -> None:
 
     posts_collected = 0
 
+    # Phase 1 — prediction inputs first (fast CSV/DB loads)
     try:
         load_football_data()
+        write_prediction_ready_flag()
+        logger.info(
+            "Football / player stats loaded — prediction_ready flag set "
+            "(trainer can use squad data)."
+        )
     except Exception as exc:
         logger.error("load_football_data raised an unexpected error: %s", exc)
 
+    # Phase 2 — sentiment sources (RSS; can take minutes)
     try:
         posts_collected = collect_reddit_data()
     except Exception as exc:
