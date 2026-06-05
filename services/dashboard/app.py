@@ -384,11 +384,12 @@ def render_page_header() -> None:
     st.markdown(
         """
 <div class="hero-title">⚽ World Cup 2026 Analytics</div>
-<div class="hero-sub">Match predictions · Reddit sentiment · Tournament insights</div>
+<div class="hero-sub">Blended WC predictions · Squad stats · Reddit sentiment</div>
 <div class="hero-pills">
+  <span class="pill">Blended model</span>
+  <span class="pill">Squad strength</span>
   <span class="pill">Reddit RSS</span>
   <span class="pill">VADER NLP</span>
-  <span class="pill">XGBoost</span>
   <span class="pill">SQLite</span>
   <span class="pill">Streamlit</span>
 </div>
@@ -614,16 +615,16 @@ _BAND_COLORS = {
 def tab_predictions(filters: dict) -> None:
     section_header(
         "🔮 2026 Group Stage Predictions",
-        "ML model predictions for all 72 group stage matches.",
+        "Final blended predictions for all 72 group stage matches.",
     )
 
     # Disclaimer
     st.info(
-        "**Model confidence** comes from a baseline historical/ranking model (FIFA, ELO, H2H, "
-        "host flags), optionally adjusted by **current squad strength** from club-season stats. "
-        "Player statistics are available for approximately **900 of 1200** expected World Cup "
-        "players. Missing player stats are treated as **missing data**, not weak performance. "
-        "For low-coverage teams, squad influence is reduced and FIFA-ranking fallback is used.",
+        "**Final Confidence** combines historical ML (30%), FIFA ranking/points (40%), "
+        "ELO/rank agreement (10%), and current squad/player statistics (20%), with caps "
+        "to avoid overstatement. The standalone historical ML signal is only one component — "
+        "see **Model Performance** for that diagnostic. Player stats cover ~900 of ~1200 "
+        "expected World Cup players; missing stats are **missing data**, not weak players.",
         icon="ℹ️",
     )
 
@@ -689,23 +690,26 @@ def tab_predictions(filters: dict) -> None:
     )
     if conf_for_avg in df26.columns:
         avg_conf = pd.to_numeric(df26[conf_for_avg], errors="coerce").mean()
-        c2.metric("Avg Adjusted Confidence", f"{avg_conf:.1%}")
+        c2.metric("Avg Final Confidence", f"{avg_conf:.1%}")
         if has_band:
             high_count = (df26["confidence_band"] == "High").sum()
             c3.metric("High-confidence predictions", f"{high_count}/{len(df26)}")
         else:
             c3.metric("High-confidence (≥70%)",
                       f"{(df26['confidence'] >= 0.70).sum()}/{len(df26)}")
-        ml_acc  = metrics_json.get("accuracy")
-        baseline = metrics_json.get("baseline", {}) or {}
-        base_acc = baseline.get("accuracy") if isinstance(baseline, dict) else None
-        if ml_acc is not None and base_acc is not None:
-            c4.metric("ML vs Baseline", f"{float(ml_acc):.1%} vs {float(base_acc):.1%}",
-                      help="ML model accuracy vs. simple FIFA-ranking baseline on test set")
-        elif ml_acc is not None:
-            c4.metric("Model accuracy (test)", f"{float(ml_acc):.1%}")
+        if has_adj_applied:
+            adj_ct = int(
+                pd.to_numeric(df26["squad_adjustment_applied"], errors="coerce")
+                .fillna(0)
+                .sum()
+            )
+            c4.metric(
+                "Blended predictions",
+                f"{adj_ct}/{len(df26)}",
+                help="Final predictions using ranking + ML + ELO + squad blend",
+            )
         else:
-            c4.metric("Model status", metrics_json.get("status", "unknown"))
+            c4.metric("Prediction system", "Blended model + squad")
 
     # ── Squad data health cards ──────────────────────────────────────────────
     if has_squad or has_adj_applied:
@@ -762,16 +766,19 @@ def tab_predictions(filters: dict) -> None:
         if "adjusted_confidence" in df26.columns
         else "squad_adjusted_confidence"
     )
-    baseline_conf_col = (
-        "raw_model_confidence" if has_raw_conf else "confidence"
+    hist_ml_col = (
+        "historical_ml_confidence"
+        if "historical_ml_confidence" in df26.columns
+        else "raw_model_confidence"
+        if has_raw_conf
+        else None
     )
     col_map = {
         "group_name":       "Group",
         "team_a":           "Team A",
         "team_b":           "Team B",
         "predicted_winner": "Winner",
-        baseline_conf_col:  "Model Confidence",
-        adj_conf_col:       "Adjusted Confidence",
+        adj_conf_col:       "Final Confidence",
         "confidence_band":  "Confidence Band",
         "squad_strength_a": "Squad A",
         "squad_strength_b": "Squad B",
@@ -786,15 +793,39 @@ def tab_predictions(filters: dict) -> None:
     display_cols = [c for c in col_map if c in df26.columns]
     df_show = df26[display_cols].rename(columns=col_map).copy()
 
+    with st.expander("Historical ML signal (debug component)", expanded=False):
+        st.caption(
+            "The standalone historical ML classifier is only one input to the final "
+            "prediction. It is shown here for transparency, not as the main model."
+        )
+        debug_map = {}
+        if hist_ml_col and hist_ml_col in df26.columns:
+            debug_map[hist_ml_col] = "Historical ML Signal"
+        if "ranking_baseline_confidence" in df26.columns:
+            debug_map["ranking_baseline_confidence"] = "Ranking Component"
+        if debug_map:
+            dbg = df26[list(debug_map.keys())].rename(columns=debug_map).copy()
+            for dc in debug_map.values():
+                if dc in dbg.columns:
+                    nums = pd.to_numeric(dbg[dc], errors="coerce")
+                    dbg[dc] = nums.apply(lambda v: f"{v:.1%}" if pd.notna(v) else "—")
+            st.dataframe(
+                pd.concat(
+                    [df26[["team_a", "team_b"]].reset_index(drop=True), dbg],
+                    axis=1,
+                ),
+                use_container_width=True,
+                height=280,
+            )
+
     with st.expander("What do these columns mean?", expanded=False):
         st.markdown(
             """
 | Column | Meaning |
 |--------|---------|
-| **Winner** | Team most likely to win (or Draw) after baseline model + optional squad tweak |
-| **Model Confidence** | Baseline ML probability for the predicted outcome (FIFA rank, ELO, H2H, hosts) |
-| **Adjusted Confidence** | Baseline plus agreement-based boost from squad, FIFA rank, points, and ELO (capped) |
-| **Confidence Band** | High / Medium / Low bucket from adjusted confidence |
+| **Winner** | Final blended prediction (ranking + ML + ELO + squad/player stats) |
+| **Final Confidence** | Probability for the predicted outcome after the full blend (capped at 88%) |
+| **Confidence Band** | High / Medium / Low bucket from final confidence |
 | **Squad A / B** | Current squad strength score (0–100) from club-season player stats |
 | **Squad Diff** | Squad A minus Squad B (positive favors Team A) |
 | **Coverage A / B** | Share of expected 26-man roster with stats in our database (0–100%) |
@@ -854,15 +885,12 @@ def tab_predictions(filters: dict) -> None:
     df_show.drop(columns=["Tier A", "Tier B"], inplace=True, errors="ignore")
 
     sort_col = (
-        "Adjusted Confidence"
-        if "Adjusted Confidence" in df_show.columns
-        else "Model Confidence"
+        "Final Confidence"
+        if "Final Confidence" in df_show.columns
+        else "Confidence Band"
     )
-    if sort_col in df_show.columns:
-        sort_vals = pd.to_numeric(
-            df26[adj_conf_col if sort_col == "Adjusted Confidence" else baseline_conf_col],
-            errors="coerce",
-        )
+    if sort_col in df_show.columns and sort_col == "Final Confidence":
+        sort_vals = pd.to_numeric(df26[adj_conf_col], errors="coerce")
         df_show = df_show.assign(_sort=sort_vals.values).sort_values(
             "_sort", ascending=False
         ).drop(columns="_sort")
@@ -876,8 +904,7 @@ def tab_predictions(filters: dict) -> None:
             return "background:#3a2a10;color:#ffa726"
         return "background:#3a1010;color:#ef9a9a"
 
-    if "Model Confidence" in df_show.columns:
-        _ = df_show  # already defined above
+    if "Final Confidence" in df_show.columns or "Confidence Band" in df_show.columns:
 
         def _cell_band(v):
             if v == "High":
@@ -889,7 +916,7 @@ def tab_predictions(filters: dict) -> None:
             return ""
 
         conf_cols = [
-            c for c in ("Model Confidence", "Adjusted Confidence")
+            c for c in ("Final Confidence",)
             if c in df_show.columns
         ]
         subset_band = (
@@ -1440,9 +1467,16 @@ def tab_historical(filters: dict) -> None:
 
 def tab_model() -> None:
     section_header(
-        "🤖 Model Performance",
-        "Trained on 1990–2018 match data; tested on 2022. "
-        "Dataset is small (~64 matches) — metrics are indicative.",
+        "🤖 Historical ML Component",
+        "Diagnostic metrics for the standalone historical classifier only. "
+        "Final 2026 predictions blend ranking, ELO, ML, and squad/player stats.",
+    )
+
+    st.info(
+        "This tab evaluates **only the historical ML component** trained on past World Cup "
+        "matches. The **final 2026 prediction system** also blends FIFA ranking, ELO, and "
+        "current squad/player statistics. See the Predictions tab for final confidence.",
+        icon="ℹ️",
     )
 
     m = load_metrics()
@@ -1458,9 +1492,9 @@ def tab_model() -> None:
 
     if m.get("status") == "trained":
         c1, c2, c3, c4, c5 = st.columns(5, gap="small")
-        c1.metric("Best model",  shorten_model_name(m.get("best_model")))
-        c2.metric("Accuracy",    fmt(m.get("accuracy")))
-        c3.metric("F1 Macro",    fmt(m.get("f1_macro")))
+        c1.metric("ML component", shorten_model_name(m.get("best_model")))
+        c2.metric("ML accuracy (2022 test)", fmt(m.get("accuracy")))
+        c3.metric("ML F1 macro", fmt(m.get("f1_macro")))
         c4.metric("Train rows",  m.get("train_rows", "—"))
         c5.metric("Test rows",   m.get("test_rows", "—"))
 
@@ -1473,9 +1507,13 @@ def tab_model() -> None:
         if base_acc is not None and base_f1 is not None:
             beats = m.get("ml_beats_baseline_f1", False)
             st.caption(
-                f"Ranking baseline: accuracy {float(base_acc):.1%}, "
+                f"Ranking baseline (same test set): accuracy {float(base_acc):.1%}, "
                 f"F1 macro {float(base_f1):.3f}"
-                + (" — ML beats baseline on F1" if beats else " — baseline F1 ≥ ML")
+                + (
+                    " — ranking baseline outperforms standalone ML"
+                    if not beats
+                    else " — ML beats ranking baseline on F1"
+                )
             )
 
         if m.get("single_class_collapse"):
@@ -1483,13 +1521,43 @@ def tab_model() -> None:
                 "The ML model predicts only one outcome class on the 2022 test set. "
                 "Retrain after symmetric augmentation fixes (see trainer logs)."
             )
+        elif m.get("zero_draw_predictions"):
+            st.warning(
+                "The historical ML component predicts **zero draws** on the 2022 test set. "
+                "A draw decision rule is applied for 2026 final predictions; see trainer logs."
+            )
         elif m.get("predicted_class_distribution"):
             st.caption(
-                "Test predicted classes: "
+                "Test predicted classes (draw-rule evaluation): "
                 + ", ".join(
                     f"{k}={v}"
                     for k, v in m["predicted_class_distribution"].items()
                 )
+            )
+
+        draw_rule = m.get("draw_decision_rule") or {}
+        if draw_rule.get("enabled"):
+            st.caption(
+                f"Draw decision rule: predict Draw when draw proba ≥ "
+                f"{float(draw_rule.get('draw_threshold', 0.3)):.2f} and "
+                f"|P(A)−P(B)| ≤ {float(draw_rule.get('closeness_threshold', 0.1)):.2f}"
+            )
+        if m.get("draw_recall") is not None:
+            st.caption(
+                f"Draw recall (2022 test): {float(m['draw_recall']):.3f}"
+                + (
+                    f" | Balanced accuracy: {float(m['balanced_accuracy']):.3f}"
+                    if m.get("balanced_accuracy") is not None
+                    else ""
+                )
+            )
+        argmax_cmp = m.get("argmax_comparison") or {}
+        if argmax_cmp:
+            st.caption(
+                "Argmax-only comparison — "
+                f"accuracy {float(argmax_cmp.get('accuracy', 0)):.1%}, "
+                f"F1 macro {float(argmax_cmp.get('f1_macro', 0)):.3f}, "
+                f"draw recall {float(argmax_cmp.get('draw_recall', 0)):.3f}"
             )
 
         if m.get("proba_mapping"):
@@ -1510,11 +1578,16 @@ def tab_model() -> None:
         cm = m.get("models", {}).get(bm, {}).get("confusion_matrix")
         if cm:
             st.markdown("**Confusion matrix**")
+            st.caption(
+                "This confusion matrix evaluates **only the historical ML component** on the "
+                "2022 test set (with draw decision rule). The **final 2026 prediction system** "
+                "is a blended model that also uses FIFA ranking, ELO, and squad/player statistics."
+            )
             labels = ["B wins", "Draw", "A wins"]
             fig_cm = px.imshow(
                 cm, x=labels, y=labels,
                 text_auto=True, color_continuous_scale="Blues",
-                title=f"{shorten_model_name(bm)} — rows=actual, cols=predicted",
+                title=f"{shorten_model_name(bm)} — rows=actual, cols=predicted (draw-rule)",
                 labels={"x": "Predicted", "y": "Actual", "color": "Count"},
                 aspect="auto", height=340,
             )

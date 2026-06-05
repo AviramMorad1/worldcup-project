@@ -443,6 +443,38 @@ def check_model_artifacts(model_dir: Path | None, report: Report) -> None:
             report.pass_(
                 f"Confusion matrix uses {nonzero_cols} predicted-class columns"
             )
+        draw_preds = col_sums[1] if len(col_sums) > 1 else 0
+        if draw_preds == 0:
+            report.warn(
+                f"ML component predicts zero draws on test set (draw column sum=0)"
+            )
+        else:
+            report.pass_(f"ML draw predictions on test set: {draw_preds}")
+
+    draw_recall = metrics.get("draw_recall")
+    if draw_recall is not None:
+        report.info(f"ML draw recall (2022 test): {float(draw_recall):.4f}")
+        if float(draw_recall) == 0:
+            report.warn("ML draw recall is zero — draw handling still weak")
+
+    bal_acc = metrics.get("balanced_accuracy")
+    if bal_acc is not None:
+        report.info(f"ML balanced accuracy: {float(bal_acc):.4f}")
+
+    draw_rule = metrics.get("draw_decision_rule") or {}
+    if draw_rule.get("enabled"):
+        report.info(
+            f"Draw decision rule: threshold={draw_rule.get('draw_threshold')}, "
+            f"closeness={draw_rule.get('closeness_threshold')}"
+        )
+
+    argmax_cmp = metrics.get("argmax_comparison") or {}
+    if argmax_cmp:
+        report.info(
+            f"Argmax-only comparison: accuracy={float(argmax_cmp.get('accuracy', 0)):.4f}, "
+            f"f1_macro={float(argmax_cmp.get('f1_macro', 0)):.4f}, "
+            f"draw_recall={float(argmax_cmp.get('draw_recall', 0)):.4f}"
+        )
 
 
 def check_squad_and_league(conn: sqlite3.Connection, report: Report) -> None:
@@ -675,10 +707,43 @@ def _check_2026_confidence_calibration(conn: sqlite3.Connection, report: Report)
     ).fetchone()[0]
     if over_cap:
         report.fail(
-            f"{over_cap} group-stage prediction(s) exceed 88% adjusted confidence"
+            f"{over_cap} group-stage prediction(s) exceed 88% final confidence"
         )
     else:
-        report.pass_("No 2026 adjusted confidence above 88% cap")
+        report.pass_("No 2026 final confidence above 88% cap")
+
+    hist_col = (
+        "historical_ml_confidence"
+        if column_exists(conn, "match_predictions", "historical_ml_confidence")
+        else "raw_model_confidence"
+    )
+    if column_exists(conn, "match_predictions", hist_col):
+        avg_row = conn.execute(
+            f"""
+            SELECT AVG({hist_col}) AS avg_ml,
+                   AVG(adjusted_confidence) AS avg_final
+            FROM match_predictions
+            WHERE tournament_year = 2026
+            """
+        ).fetchone()
+        if avg_row and avg_row["avg_ml"] is not None:
+            report.info(
+                f"Avg historical ML signal: {avg_row['avg_ml']:.1%} vs "
+                f"avg final confidence: {avg_row['avg_final']:.1%}"
+            )
+
+    non_null_final = conn.execute(
+        """
+        SELECT COUNT(*) FROM match_predictions
+        WHERE tournament_year = 2026 AND adjusted_confidence IS NOT NULL
+        """
+    ).fetchone()[0]
+    if non_null_final >= EXPECTED_PREDICTIONS_2026:
+        report.pass_(f"Final confidence populated on {non_null_final}/72 predictions")
+    elif non_null_final > 0:
+        report.warn(f"Only {non_null_final}/72 predictions have final confidence")
+    else:
+        report.fail("No final adjusted_confidence values on 2026 predictions")
 
     large_gap_flat = conn.execute(
         """
@@ -697,15 +762,30 @@ def _check_2026_confidence_calibration(conn: sqlite3.Connection, report: Report)
           AND ABS(squad_strength_diff) >= 25
         """
     ).fetchone()[0]
+    if column_exists(conn, "match_predictions", "squad_strength_diff"):
+        # rank gap proxy via squad + winner alignment — use large squad gap + low final
+        strong_low = conn.execute(
+            """
+            SELECT COUNT(*) FROM match_predictions
+            WHERE tournament_year = 2026
+              AND ABS(squad_strength_diff) >= 25
+              AND adjusted_confidence < 0.70
+            """
+        ).fetchone()[0]
+        if strong_low >= 3:
+            report.warn(
+                f"{strong_low} large squad-gap matches have final confidence below 70%"
+            )
+
     if total_large > 0 and large_gap_flat == total_large:
         report.warn(
-            f"All {total_large} large squad-gap matches have adjusted confidence "
-            "between 55–68% — calibration may be too conservative"
+            f"All {total_large} large squad-gap matches have final confidence "
+            "between 55–68% — blend may be too conservative"
         )
     elif large_gap_flat > total_large // 2 and total_large >= 3:
         report.warn(
             f"{large_gap_flat}/{total_large} large squad-gap matches still have "
-            "adjusted confidence 55–68%"
+            "final confidence 55–68%"
         )
 
     top_gap = conn.execute(
@@ -733,10 +813,20 @@ def _check_2026_confidence_calibration(conn: sqlite3.Connection, report: Report)
         if column_exists(conn, "match_predictions", "confidence_boost_amount")
         else "squad_adjustment_amount"
     )
+    hist_sel = (
+        "historical_ml_confidence"
+        if column_exists(conn, "match_predictions", "historical_ml_confidence")
+        else "raw_model_confidence"
+    )
+    rank_sel = (
+        "ranking_baseline_confidence"
+        if column_exists(conn, "match_predictions", "ranking_baseline_confidence")
+        else "NULL"
+    )
     top_conf = conn.execute(
         f"""
-        SELECT team_a, team_b, adjusted_confidence, raw_model_confidence,
-               {boost_sel}
+        SELECT team_a, team_b, adjusted_confidence, {hist_sel},
+               {rank_sel}
         FROM match_predictions
         WHERE tournament_year = 2026
         ORDER BY adjusted_confidence DESC
@@ -745,9 +835,11 @@ def _check_2026_confidence_calibration(conn: sqlite3.Connection, report: Report)
     ).fetchall()
     if top_conf:
         report.info(
-            "Highest adjusted confidence: "
+            "Highest final confidence: "
             + "; ".join(
-                f"{r[0]} vs {r[1]} {r[2]:.1%} (base {r[3]:.1%}, boost {r[4] or 0:.3f})"
+                f"{r[0]} vs {r[1]} final={r[2]:.1%} "
+                f"(ML={r[3]:.1%}"
+                + (f", rank={r[4]:.1%})" if r[4] is not None else ")")
                 for r in top_conf[:5]
             )
         )
@@ -773,9 +865,11 @@ def _check_2026_confidence_calibration(conn: sqlite3.Connection, report: Report)
         )
         if adj < 0.72:
             report.warn(
-                f"Germany vs Curaçao adjusted confidence {adj:.1%} below 72% "
-                "(expected ~75–82% for strong agreed signals)"
+                f"Germany vs Curaçao final confidence {adj:.1%} below 72% "
+                "(expected ~72–80% for strong blended signals)"
             )
+        elif 0.72 <= adj <= 0.88:
+            report.pass_(f"Germany vs Curaçao final confidence {adj:.1%} in target range")
         elif adj > 0.88:
             report.warn(
                 f"Germany vs Curaçao adjusted confidence {adj:.1%} exceeds 88% cap"

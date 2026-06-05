@@ -18,8 +18,19 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
+import json
+
 import joblib
+import numpy as np
 import pandas as pd
+
+from model import (
+    DEFAULT_CLOSENESS_THRESHOLD,
+    DEFAULT_DRAW_THRESHOLD,
+    METRICS_PATH,
+    apply_draw_decision_rule,
+    align_proba_to_class_order,
+)
 
 DB_PATH    = "/app/data/worldcup.db"
 MODEL_PATH = Path("/app/data/models/model.pkl")
@@ -113,6 +124,8 @@ def _migrate_match_predictions(conn: sqlite3.Connection) -> None:
         ("combined_strength_signal", "REAL"),
         ("confidence_boost_amount", "REAL"),
         ("confidence_cap_applied", "REAL"),
+        ("ranking_baseline_confidence", "REAL"),
+        ("historical_ml_confidence", "REAL"),
     ]
     for col, col_type in migrations:
         if col not in existing:
@@ -355,7 +368,7 @@ def _confidence_band(conf: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2026 combined-signal confidence calibration (post-baseline model only)
+# 2026 final prediction blend (ML + ranking + ELO + squad — not training data)
 # ---------------------------------------------------------------------------
 
 _GROUP_STAGE_MAX_CONF = 0.88
@@ -363,6 +376,16 @@ _ORDINARY_WINNER_CAP = 0.82
 _STRONG_AGREEMENT_CAP = 0.86
 _MIN_DRAW_PROBA = 0.12
 _PROBA_FLOOR = 0.01
+
+# Final blend weights (sum = 1.0 when squad data available)
+_W_RANK = 0.40
+_W_ML = 0.30
+_W_ELO_RANK = 0.10
+_W_SQUAD = 0.20
+# Fallback when squad unavailable
+_W_RANK_NO_SQUAD = 0.45
+_W_ML_NO_SQUAD = 0.35
+_W_ELO_NO_SQUAD = 0.20
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
@@ -495,6 +518,241 @@ def _renormalize_proba(proba: list[float]) -> list[float]:
     if total <= 0:
         return [1 / 3, 1 / 3, 1 / 3]
     return [x / total for x in p]
+
+
+def _signal_to_proba(signal: float) -> list[float]:
+    """
+    Convert a directional strength signal to [team_b, draw, team_a] probabilities.
+    signal > 0 favors team A; signal < 0 favors team B.
+    """
+    s = _clip(signal, -1.0, 1.0)
+    if abs(s) < 0.08:
+        return _renormalize_proba([0.28, 0.44, 0.28])
+
+    strength = abs(s)
+    if strength >= 0.70:
+        fav = 0.58 + 0.24 * strength
+        dog = max(_PROBA_FLOOR, 0.10 - 0.04 * strength)
+        draw = max(_MIN_DRAW_PROBA, 1.0 - fav - dog)
+        if s > 0:
+            p_a, p_b = fav, dog
+        else:
+            p_b, p_a = fav, dog
+    elif strength >= 0.30:
+        fav = 0.34 + 0.38 * strength
+        dog = max(_PROBA_FLOOR, 0.24 - 0.14 * strength)
+        draw = max(_MIN_DRAW_PROBA, 1.0 - fav - dog)
+        if s > 0:
+            p_a, p_b = fav, dog
+        else:
+            p_b, p_a = fav, dog
+    else:
+        if s > 0:
+            p_a = 0.32 + 0.28 * strength
+            p_b = max(_PROBA_FLOOR, 0.28 - 0.12 * strength)
+        else:
+            p_b = 0.32 + 0.28 * strength
+            p_a = max(_PROBA_FLOOR, 0.28 - 0.12 * strength)
+        draw = max(_MIN_DRAW_PROBA, 1.0 - p_a - p_b)
+    return _renormalize_proba([p_b, draw, p_a])
+
+
+def _ranking_baseline_proba(feat: dict) -> list[float]:
+    """FIFA current rank + points → soft outcome probabilities."""
+    rank_signal = _clip((-feat["current_rank_diff"]) / 80.0, -1.0, 1.0)
+    pts_signal = _clip(feat["current_points_diff"] / 400.0, -1.0, 1.0)
+    combined = 0.70 * rank_signal + 0.30 * pts_signal
+    return _signal_to_proba(combined)
+
+
+def _elo_rank_agreement_proba(feat: dict) -> list[float]:
+    """ELO and FIFA rank agreement → outcome probabilities."""
+    rank_s = _clip((-feat["current_rank_diff"]) / 80.0, -1.0, 1.0)
+    elo_s = _clip(feat["elo_diff"] / 250.0, -1.0, 1.0)
+
+    if abs(rank_s) < 0.10 and abs(elo_s) < 0.10:
+        return _renormalize_proba([0.30, 0.40, 0.30])
+
+    if rank_s * elo_s > 0:
+        signal = 0.55 * rank_s + 0.45 * elo_s
+    else:
+        signal = 0.35 * rank_s + 0.35 * elo_s
+    return _signal_to_proba(signal)
+
+
+def _squad_blend_coverage_scale(tier_a: str, tier_b: str) -> float:
+    """Reduce squad influence when either team has sparse player stats."""
+    tiers = (tier_a or "Unknown", tier_b or "Unknown")
+    if "Very Low" in tiers:
+        return 0.35
+    if "Low" in tiers:
+        return 0.60
+    return 1.0
+
+
+def _squad_strength_proba(
+    squad_diff: float,
+    tier_a: str,
+    tier_b: str,
+) -> list[float]:
+    """Squad strength diff → soft probabilities (missing data handled via tiers)."""
+    scale = _squad_blend_coverage_scale(tier_a, tier_b)
+    signal = _clip(squad_diff / 35.0, -1.0, 1.0) * scale
+    return _signal_to_proba(signal)
+
+
+def _weighted_blend(
+    components: list[tuple[float, list[float]]],
+) -> list[float]:
+    """Weighted sum of probability vectors, then renormalize."""
+    total_w = sum(w for w, _ in components)
+    if total_w <= 0:
+        return [1 / 3, 1 / 3, 1 / 3]
+    blended = [0.0, 0.0, 0.0]
+    for w, proba in components:
+        for i in range(3):
+            blended[i] += (w / total_w) * proba[i]
+    return _renormalize_proba(blended)
+
+
+def _proba_to_winner(proba: list[float], team_a: str, team_b: str) -> str:
+    idx = int(max(range(3), key=lambda i: proba[i]))
+    if idx == 2:
+        return team_a
+    if idx == 0:
+        return team_b
+    return "Draw"
+
+
+def _winner_confidence(proba: list[float], winner: str, team_a: str, team_b: str) -> float:
+    idx = _winner_index(winner, team_a, team_b)
+    if idx is None:
+        return float(max(proba))
+    return float(proba[idx])
+
+
+def blend_final_2026_probabilities(
+    ml_proba: list[float],
+    feat: dict,
+    team_a: str,
+    team_b: str,
+    squad_diff: float,
+    tier_a: str,
+    tier_b: str,
+    rankings_df: pd.DataFrame,
+    squad_data_ok: bool,
+) -> tuple[list[float], dict]:
+    """
+    Final 2026 prediction blend:
+      40% ranking baseline + 30% ML + 10% ELO/rank agreement + 20% squad
+    (45/35/20 when squad unavailable), then confidence caps.
+
+    proba order: [team_b, draw, team_a].
+    """
+    rank_proba = _ranking_baseline_proba(feat)
+    elo_proba = _elo_rank_agreement_proba(feat)
+
+    meta: dict = {
+        "combined_strength_signal": 0.0,
+        "confidence_boost_amount": 0.0,
+        "confidence_cap_applied": _ORDINARY_WINNER_CAP,
+        "squad_adjustment_amount": 0.0,
+        "squad_adjustment_applied": 0,
+        "signals_agree": False,
+        "ranking_baseline_confidence": 0.0,
+        "blend_weights": "",
+    }
+
+    if squad_data_ok:
+        squad_proba = _squad_strength_proba(squad_diff, tier_a, tier_b)
+        components = [
+            (_W_RANK, rank_proba),
+            (_W_ML, ml_proba),
+            (_W_ELO_RANK, elo_proba),
+            (_W_SQUAD, squad_proba),
+        ]
+        meta["blend_weights"] = (
+            f"rank={_W_RANK}, ml={_W_ML}, elo={_W_ELO_RANK}, squad={_W_SQUAD}"
+        )
+        meta["squad_adjustment_applied"] = 1
+    else:
+        squad_proba = [1 / 3, 1 / 3, 1 / 3]
+        components = [
+            (_W_RANK_NO_SQUAD, rank_proba),
+            (_W_ML_NO_SQUAD, ml_proba),
+            (_W_ELO_NO_SQUAD, elo_proba),
+        ]
+        meta["blend_weights"] = (
+            f"rank={_W_RANK_NO_SQUAD}, ml={_W_ML_NO_SQUAD}, "
+            f"elo={_W_ELO_NO_SQUAD} (no squad)"
+        )
+
+    pre_cap = _weighted_blend(components)
+    predicted_winner = _proba_to_winner(pre_cap, team_a, team_b)
+    winner_idx = _winner_index(predicted_winner, team_a, team_b)
+    initial_winner_p = (
+        float(pre_cap[winner_idx]) if winner_idx is not None else 0.0
+    )
+
+    combined = _combined_strength_signal(
+        feat, squad_diff if squad_data_ok else 0.0, rankings_df, team_a, team_b
+    )
+    meta["combined_strength_signal"] = round(combined, 4)
+    meta["signals_agree"] = _signals_agree_with_winner(
+        combined, predicted_winner, team_a, team_b
+    )
+    meta["ranking_baseline_confidence"] = round(
+        _winner_confidence(rank_proba, predicted_winner, team_a, team_b), 6
+    )
+
+    if (
+        winner_idx is not None
+        and predicted_winner != "Draw"
+        and meta["signals_agree"]
+        and abs(combined) >= 0.35
+    ):
+        agree_boost = _max_boost_from_favorite_signal(abs(combined))
+        cov_mult = (
+            _coverage_boost_multiplier(
+                tier_a, tier_b, predicted_winner, team_a, team_b
+            )
+            if squad_data_ok
+            else 1.0
+        )
+        agree_boost *= cov_mult
+        if agree_boost > 1e-6:
+            before_boost = pre_cap[winner_idx]
+            pre_cap = _apply_boost_to_winner(
+                pre_cap, winner_idx, agree_boost, pre_cap[1]
+            )
+            meta["confidence_boost_amount"] = round(
+                pre_cap[winner_idx] - before_boost, 6
+            )
+            meta["squad_adjustment_amount"] = meta["confidence_boost_amount"]
+
+    if winner_idx is not None and predicted_winner != "Draw":
+        cap = _winner_probability_cap(abs(combined), feat, squad_diff)
+        meta["confidence_cap_applied"] = cap
+        before = pre_cap[winner_idx]
+        final_proba, applied_cap = _cap_winner_probability(pre_cap, winner_idx, cap)
+        meta["confidence_cap_applied"] = applied_cap
+        if max(final_proba) > _GROUP_STAGE_MAX_CONF:
+            win_i = int(max(range(3), key=lambda i: final_proba[i]))
+            final_proba, _ = _cap_winner_probability(
+                final_proba, win_i, _GROUP_STAGE_MAX_CONF
+            )
+            meta["confidence_cap_applied"] = _GROUP_STAGE_MAX_CONF
+    else:
+        final_proba = pre_cap
+
+    if winner_idx is not None:
+        meta["confidence_boost_amount"] = round(
+            final_proba[winner_idx] - initial_winner_p, 6
+        )
+        meta["squad_adjustment_amount"] = meta["confidence_boost_amount"]
+
+    meta["pre_cap_confidence"] = round(float(max(pre_cap)), 6)
+    return final_proba, meta
 
 
 def _winner_probability_cap(
@@ -726,9 +984,13 @@ def _build_explanation(
                 f"Low player-stat coverage ({', '.join(low_teams)}); "
                 "missing players treated as unknown"
             )
+    factors.append(
+        "Final blend: 40% FIFA ranking, 30% historical ML, "
+        "10% ELO/rank agreement, 20% squad/player stats"
+    )
     if adj_applied and abs(boost_amount) >= 0.005:
         factors.append(
-            f"Confidence boost: +{abs(boost_amount)*100:.1f}pp toward {predicted_winner}"
+            f"Post-blend cap adjustment: {boost_amount*100:+.1f}pp on final winner"
         )
     if abs(combined_signal) >= 0.05:
         favored_side = team_a if combined_signal > 0 else team_b
@@ -773,25 +1035,51 @@ def _build_explanation(
                     f" Current squad profile favors {stronger} "
                     f"(active players, league quality, production)."
                 )
-        if predicted_winner != "Draw" and signals_agree and boost_amount >= 0.05:
+        if predicted_winner != "Draw" and signals_agree:
             expl += (
-                f" {predicted_winner} receives higher adjusted confidence because "
-                f"the model, squad strength, and current ranking signals all favor "
-                f"{predicted_winner}. Confidence is capped at {cap_applied:.0%} to "
-                f"avoid overstatement."
-            )
-        elif predicted_winner != "Draw" and adj_applied and boost_amount >= 0.02:
-            expl += (
-                f" Adjusted confidence increased by "
-                f"{boost_amount*100:.1f} percentage points where signals aligned."
+                f" Final confidence blends historical ML, FIFA ranking, ELO, and "
+                f"current squad/player statistics — all favoring {predicted_winner}. "
+                f"Capped at {cap_applied:.0%} to avoid overstatement."
             )
         elif predicted_winner != "Draw":
             expl += (
-                " Squad and ranking signals do not strongly agree, "
-                "so confidence remains moderate."
+                " Final confidence combines ranking, ELO, historical ML, and squad "
+                "signals; sources do not fully agree, so confidence stays moderate."
             )
 
     return expl, key_factors
+
+
+# ---------------------------------------------------------------------------
+# Draw decision rule (loaded from metrics.json after training)
+# ---------------------------------------------------------------------------
+
+
+def _load_draw_rule_params() -> tuple[float, float]:
+    """Read tuned draw/closeness thresholds from metrics.json."""
+    draw_th = DEFAULT_DRAW_THRESHOLD
+    close_th = DEFAULT_CLOSENESS_THRESHOLD
+    if not METRICS_PATH.exists():
+        return draw_th, close_th
+    try:
+        with open(METRICS_PATH, encoding="utf-8") as f:
+            metrics = json.load(f)
+        rule = metrics.get("draw_decision_rule") or {}
+        if rule.get("enabled"):
+            draw_th = float(rule.get("draw_threshold", draw_th))
+            close_th = float(rule.get("closeness_threshold", close_th))
+            logger.info(
+                "Using draw decision rule: draw_threshold=%.2f, "
+                "closeness_threshold=%.2f",
+                draw_th, close_th,
+            )
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Could not load draw rule from metrics.json (%s) — defaults "
+            "draw=%.2f close=%.2f",
+            exc, draw_th, close_th,
+        )
+    return draw_th, close_th
 
 
 # ---------------------------------------------------------------------------
@@ -826,7 +1114,11 @@ def run_2026_predictions() -> None:
         )
         return
 
-    logger.info("Running 2026 group stage predictions ...")
+    logger.info(
+        "Running 2026 group stage predictions (final blend: "
+        "rank=%.0f%%, ml=%.0f%%, elo=%.0f%%, squad=%.0f%%) ...",
+        _W_RANK * 100, _W_ML * 100, _W_ELO_RANK * 100, _W_SQUAD * 100,
+    )
 
     elo_map     = _load_latest_elo()
     rankings_df = _load_latest_rankings()
@@ -872,6 +1164,8 @@ def run_2026_predictions() -> None:
     except Exception as exc:
         logger.warning("Squad features setup failed: %s — continuing without.", exc)
 
+    draw_threshold, closeness_threshold = _load_draw_rule_params()
+
     run_at = datetime.now(timezone.utc).isoformat()
     prediction_rows = []
 
@@ -881,9 +1175,15 @@ def run_2026_predictions() -> None:
             X = pd.DataFrame([feat])[FEATURE_COLS]
 
             try:
-                proba           = list(model.predict_proba(X)[0])
-                predicted_class = int(max(range(len(proba)), key=lambda i: proba[i]))
-                raw_confidence  = float(max(proba))
+                proba_raw = model.predict_proba(X)
+                proba_aligned = align_proba_to_class_order(model, proba_raw)[0]
+                proba = list(proba_aligned)
+                predicted_class = apply_draw_decision_rule(
+                    np.array(proba),
+                    draw_threshold=draw_threshold,
+                    closeness_threshold=closeness_threshold,
+                )
+                raw_confidence = float(proba[predicted_class])
             except Exception as exc:
                 logger.warning(
                     "Prediction failed for %s vs %s: %s — using default.",
@@ -892,26 +1192,21 @@ def run_2026_predictions() -> None:
                 proba = [0.33, 0.33, 0.34]
                 predicted_class, raw_confidence = 2, 0.34
 
-            base_proba = list(proba)
-
-            if predicted_class == 2:
-                predicted_winner = team_a
-            elif predicted_class == 0:
-                predicted_winner = team_b
-            else:
-                predicted_winner = "Draw"
+            ml_proba = list(proba)
+            ml_confidence = raw_confidence
 
             sq_a, sq_b, sq_diff = 0.0, 0.0, 0.0
             cov_a, cov_b = 0.0, 0.0
             tier_a, tier_b = "", ""
+            sq_ok = False
             adj_applied = 0
             adj_amount = 0.0
             boost_amount = 0.0
             combined_signal = 0.0
             cap_applied = _ORDINARY_WINNER_CAP
             signals_agree = False
-            adj_confidence = raw_confidence
-            cal_meta: dict = {}
+            ranking_conf = 0.0
+            blend_meta: dict = {}
 
             if squad_available:
                 try:
@@ -919,42 +1214,46 @@ def run_2026_predictions() -> None:
                         sq_a, sq_b, sq_diff, sq_ok,
                         tier_a, tier_b, cov_a, cov_b, _, _,
                     ) = get_squad_strength_features(team_a, team_b)
-                    proba, cal_meta = calibrate_2026_probabilities(
-                        base_proba,
-                        feat,
-                        team_a,
-                        team_b,
-                        predicted_winner,
-                        sq_diff,
-                        tier_a,
-                        tier_b,
-                        rankings_df,
-                        sq_ok,
-                    )
-                    adj_applied = cal_meta.get("squad_adjustment_applied", 0)
-                    adj_amount = cal_meta.get("squad_adjustment_amount", 0.0)
-                    boost_amount = cal_meta.get("confidence_boost_amount", 0.0)
-                    combined_signal = cal_meta.get("combined_strength_signal", 0.0)
-                    cap_applied = cal_meta.get(
-                        "confidence_cap_applied", _ORDINARY_WINNER_CAP
-                    )
-                    signals_agree = cal_meta.get("signals_agree", False)
-                    predicted_class = int(
-                        max(range(len(proba)), key=lambda i: proba[i])
-                    )
-                    if predicted_class == 2:
-                        predicted_winner = team_a
-                    elif predicted_class == 0:
-                        predicted_winner = team_b
-                    else:
-                        predicted_winner = "Draw"
-                    adj_confidence = float(max(proba))
                 except Exception as exc:
                     logger.warning(
-                        "Confidence calibration failed for %s vs %s: %s",
+                        "Squad features failed for %s vs %s: %s",
                         team_a, team_b, exc,
                     )
-                    proba = list(base_proba)
+
+            try:
+                proba, blend_meta = blend_final_2026_probabilities(
+                    ml_proba,
+                    feat,
+                    team_a,
+                    team_b,
+                    sq_diff,
+                    tier_a,
+                    tier_b,
+                    rankings_df,
+                    squad_available and sq_ok,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Final blend failed for %s vs %s: %s — using ML only.",
+                    team_a, team_b, exc,
+                )
+                proba = list(ml_proba)
+                blend_meta = {}
+
+            predicted_winner = _proba_to_winner(proba, team_a, team_b)
+            adj_confidence = float(max(proba))
+            historical_ml_conf = _winner_confidence(
+                ml_proba, predicted_winner, team_a, team_b
+            )
+            adj_applied = blend_meta.get("squad_adjustment_applied", 0)
+            adj_amount = blend_meta.get("squad_adjustment_amount", 0.0)
+            boost_amount = blend_meta.get("confidence_boost_amount", 0.0)
+            combined_signal = blend_meta.get("combined_strength_signal", 0.0)
+            cap_applied = blend_meta.get(
+                "confidence_cap_applied", _ORDINARY_WINNER_CAP
+            )
+            signals_agree = blend_meta.get("signals_agree", False)
+            ranking_conf = blend_meta.get("ranking_baseline_confidence", 0.0)
 
             confidence = adj_confidence
             band = _confidence_band(confidence)
@@ -994,9 +1293,9 @@ def run_2026_predictions() -> None:
                 "explanation": expl,
                 "key_factors": key_factors,
                 "run_at": run_at,
-                "base_team_b_proba": round(base_proba[0], 6),
-                "base_draw_proba": round(base_proba[1], 6),
-                "base_team_a_proba": round(base_proba[2], 6),
+                "base_team_b_proba": round(ml_proba[0], 6),
+                "base_draw_proba": round(ml_proba[1], 6),
+                "base_team_a_proba": round(ml_proba[2], 6),
                 "adjusted_team_b_proba": round(proba[0], 6),
                 "adjusted_draw_proba": round(proba[1], 6),
                 "adjusted_team_a_proba": round(proba[2], 6),
@@ -1009,7 +1308,9 @@ def run_2026_predictions() -> None:
                 "squad_coverage_tier_b": tier_b or None,
                 "squad_adjustment_amount": round(adj_amount, 6) if adj_applied else None,
                 "squad_adjustment_applied": adj_applied,
-                "raw_model_confidence": round(raw_confidence, 6),
+                "raw_model_confidence": round(ml_confidence, 6),
+                "historical_ml_confidence": round(historical_ml_conf, 6),
+                "ranking_baseline_confidence": round(ranking_conf, 6),
                 "adjusted_confidence": round(adj_confidence, 6),
                 "squad_adjusted_confidence": round(adj_confidence, 6),
                 "combined_strength_signal": round(combined_signal, 4),
@@ -1041,6 +1342,7 @@ def run_2026_predictions() -> None:
             "raw_model_confidence", "adjusted_confidence", "squad_adjusted_confidence",
             "combined_strength_signal", "confidence_boost_amount",
             "confidence_cap_applied",
+            "ranking_baseline_confidence", "historical_ml_confidence",
         ]
         insert_cols = base_cols + [c for c in extra_cols if c in existing_cols]
         placeholders = ", ".join("?" * len(insert_cols))
