@@ -72,7 +72,7 @@ def wait_for_player_stats() -> None:
 
 
 def run_training_cycle() -> None:
-    logger.info("Starting collection run")
+    logger.info("Starting training cycle")
 
     ensure_model_dir()
 

@@ -1,4 +1,5 @@
 import re
+import unicodedata
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -13,7 +14,8 @@ def clean_text(text: str) -> str:
     text = text.lower()
     text = _URL_RE.sub(" ", text)
     text = _MARKDOWN_LINK_RE.sub(r"\1", text)
-    text = text.encode("ascii", errors="ignore").decode("ascii")
+    text = unicodedata.normalize("NFKD", text).encode("ascii", errors="ignore").decode("ascii")
+
     text = _KEEP_RE.sub(" ", text)
     text = _WHITESPACE_RE.sub(" ", text).strip()
     return text

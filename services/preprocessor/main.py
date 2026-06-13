@@ -73,6 +73,36 @@ TEAM_KEYWORDS: dict[str, list[str]] = {
     "Switzerland": ["switzerland", "swiss nati", "xhaka", "shaqiri", "sommer"],
     "Uruguay":     ["uruguay", "celeste", "suarez", "cavani", "valverde", "nunez"],
     "USA":         ["usa", "united states", "usmnt", "pulisic", "reyna", "weah", "dest"],
+        "Canada":        ["canada", "canmnt", "canadians", "alphonso davies",
+                      "jonathan david", "larin", "buchanan"],
+    "Turkey":        ["turkey", "turkiye", "turkish", "calhanoglu", "guler",
+                      "yildiz", "demiral", "akaydin"],
+    "Nigeria":       ["nigeria", "super eagles", "osimhen", "iheanacho",
+                      "lookman", "troost ekong", "ndidi"],
+    "Ecuador":       ["ecuador", "tri color", "tricolor", "caicedo",
+                      "enner valencia", "plata"],
+    "Saudi Arabia":  ["saudi arabia", "saudi", "green falcons", "al dawsari",
+                      "al shahrani", "al malki"],
+    "Iran":          ["iran", "team melli", "taremi", "azmoun", "jahanbakhsh"],
+    "Ivory Coast":   ["ivory coast", "cote d ivoire", "elephants", "zaha",
+                      "pepe", "gradel", "kessie"],
+    "Egypt":         ["egypt", "pharaohs", "salah", "el shahat", "trezeguet"],
+    "Cameroon":      ["cameroon", "indomitable lions", "aboubakar",
+                      "anguissa", "choupo moting"],
+    "Serbia":        ["serbia", "orlovi", "eagles", "mitrovic", "tadic",
+                      "vlahovic", "milinkovic"],
+    "Denmark":       ["denmark", "danish dynamite", "eriksen", "hojbjerg",
+                      "maehle", "kjaer"],
+    "Poland":        ["poland", "bialo czerwoni", "lewandowski", "szczesny",
+                      "zielinski"],
+    "Austria":       ["austria", "team austria", "alaba", "arnautovic",
+                      "sabitzer"],
+    "South Africa":  ["south africa", "bafana bafana", "percy tau",
+                      "ronwen williams"],
+    "Venezuela":     ["venezuela", "vinotinto", "soteldo", "bello", "romo"],
+    "Panama":        ["panama", "los canaleros", "godoy", "carrasquilla"],
+    "Jamaica":       ["jamaica", "reggae boyz", "antonio", "nicholson"],
+
 }
 
 # ---------------------------------------------------------------------------
@@ -117,6 +147,11 @@ HARD_STOPWORDS: frozenset[str] = frozenset({
     "co", "me", "utm", "ref", "status",
     # Single/double character tokens caught at token-length filter, but explicit here
     "fc", "sc", "ac", "cf",
+    "research", "consulting", "market", "insights", "firms",
+    "crypto", "betting", "sportsbook", "fanduel", "draftkings",
+    "poker", "promo", "odds", "wager", "parlay",
+    "buy", "sale", "discount", "shop", "store",
+    "attractor", "bsa", "sri", "lanka", "peacock",
 })
 
 # Keep backward-compatible alias for any legacy code that imported STOPWORDS
@@ -224,7 +259,6 @@ DOMAIN_KEYWORDS: dict[str, str] = {
     "messi":         "player_mention",
     "ronaldo":       "player_mention",
     "mbappe":        "player_mention",
-    "mbappé":        "player_mention",
     "neymar":        "player_mention",
     "vinicius":      "player_mention",
     "vini":          "player_mention",
@@ -877,8 +911,9 @@ def compute_team_sentiment_daily() -> None:
     )
     agg = agg.merge(daily_max, on="date")
     agg["hype_index"] = (
-        (agg["post_count"] / agg["max_post_count"]) * agg["avg_vader"].clip(lower=0)
+        (agg["post_count"] / agg["max_post_count"]) * agg["avg_vader"].abs()
     )
+
 
     rows = list(
         agg[["team", "date", "avg_vader", "avg_textblob",
@@ -1172,15 +1207,29 @@ def main() -> None:
     logger.info("Preprocess interval: %d minute(s).", interval_minutes)
     wait_for_collector()
 
+    PREPROCESS_TRIGGER_FLAG = "/app/data/preprocess_trigger.flag"
+
     while True:
         try:
             run_preprocessing_cycle()
         except Exception as exc:
             logger.exception("Preprocessing cycle failed: %s", exc)
+
         logger.info(
             "Sleeping for %d minutes before next preprocessing cycle.", interval_minutes
         )
-        time.sleep(interval_seconds)
+        elapsed = 0
+        while elapsed < interval_seconds:
+            time.sleep(10)
+            elapsed += 10
+            if os.path.exists(PREPROCESS_TRIGGER_FLAG):
+                try:
+                    os.remove(PREPROCESS_TRIGGER_FLAG)
+                except OSError:
+                    pass
+                logger.info("Dashboard trigger detected — running immediate cycle.")
+                break
+
 
 
 if __name__ == "__main__":

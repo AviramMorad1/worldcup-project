@@ -19,12 +19,9 @@ DB_PATH = "/app/data/worldcup.db"
 SUBREDDITS = [
     "worldcup",
     "soccer",
-    "FIFA",
     "football",
-    "PremierLeague",
-    "ChampionsLeague",
-    "LaLiga",
-    "MLS",
+    "sports",
+    "soccercirclejerk"
 ]
 
 POST_LIMIT_PER_SUBREDDIT = 25
@@ -35,6 +32,58 @@ SUBREDDIT_SLEEP_SECONDS = 8
 SEARCH_FALLBACK_QUERIES: dict[str, str] = {
     "FIFA": "FIFA World Cup 2026",
 }
+
+# Targeted search queries run in addition to subreddit feeds.
+# Each hits the public Reddit search RSS — no API auth required.
+# 25 posts per query × ~40 queries ≈ 1000 extra posts per cycle.
+SEARCH_QUERIES: list[str] = [
+    # Tournament
+    "world cup 2026",
+    "FIFA world cup 2026",
+    "WC2026",
+    "worldcup2026",
+    # Top teams
+    "Argentina world cup 2026",
+    "Brazil world cup 2026",
+    "France world cup 2026",
+    "England world cup 2026",
+    "Germany world cup 2026",
+    "Spain world cup 2026",
+    "Portugal world cup 2026",
+    "Netherlands world cup 2026",
+    "Morocco world cup 2026",
+    "USA world cup 2026",
+    "USMNT 2026",
+    "Mexico world cup 2026",
+    "Croatia world cup 2026",
+    "Japan world cup 2026",
+    "Canada world cup 2026",
+    "Nigeria world cup 2026",
+    "Senegal world cup 2026",
+    "Turkey world cup 2026",
+    "Colombia world cup 2026",
+    "Uruguay world cup 2026",
+    "Ecuador world cup 2026",
+    "South Korea world cup 2026",
+    "Australia world cup 2026",
+    # Players
+    "Mbappe world cup",
+    "Messi world cup 2026",
+    "Vinicius world cup",
+    "Bellingham world cup",
+    "Pedri world cup",
+    "Yamal world cup",
+    "Pulisic world cup",
+    "Kane world cup",
+    # Match events
+    "world cup 2026 prediction",
+    "world cup 2026 group stage",
+    "world cup 2026 squad",
+    "world cup 2026 qualifier",
+]
+
+SEARCH_SLEEP_SECONDS = 5
+
 
 USER_AGENT = "worldcup-project/1.0 student research"
 REQUEST_TIMEOUT_SECONDS = 30
@@ -301,6 +350,31 @@ def _collect_from_search_fallback(
     )
     return posts_inserted
 
+def collect_from_search_queries(conn: sqlite3.Connection) -> int:
+    """Run all SEARCH_QUERIES against Reddit search RSS. Returns total posts inserted."""
+    total = 0
+    collected_at = datetime.now(timezone.utc).isoformat()
+
+    for index, query in enumerate(SEARCH_QUERIES):
+        url = f"https://www.reddit.com/search.rss?q={quote(query)}&sort=new&t=week"
+        try:
+            feed = fetch_rss(url)
+            inserted = _insert_entries_from_feed(
+                conn, feed, f"search:{query[:30]}", collected_at, posts_only=True
+            )
+            conn.commit()
+            total += inserted
+            logger.info("Search query %r → %d post(s).", query, inserted)
+        except Exception:
+            logger.exception("Search RSS failed for query %r", query)
+
+        if index < len(SEARCH_QUERIES) - 1:
+            time.sleep(SEARCH_SLEEP_SECONDS)
+
+    logger.info("Search query collection finished. total_posts=%d", total)
+    return total
+
+
 
 def collect_from_subreddit(conn: sqlite3.Connection, subreddit_name: str) -> int:
     """Collect posts from one subreddit RSS feed. Returns posts attempted."""
@@ -361,6 +435,12 @@ def collect_reddit_data() -> int:
 
             if index < len(SUBREDDITS) - 1:
                 time.sleep(SUBREDDIT_SLEEP_SECONDS)
+
+        # NEW — run targeted search queries on top of subreddit feeds
+        try:
+            total_posts += collect_from_search_queries(conn)
+        except Exception:
+            logger.exception("Search query collection failed")
 
     logger.info(
         "Reddit RSS collection finished. total_posts=%s across %d subreddit(s).",

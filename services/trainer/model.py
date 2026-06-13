@@ -808,6 +808,15 @@ def train_models(
     joblib.dump(best_model, MODEL_PATH)
     logger.info("Best model saved to %s", MODEL_PATH)
 
+    # Extract feature importances for dashboard display
+    _fi = {}
+    try:
+        _base = getattr(best_model, "estimator", best_model)
+        if hasattr(_base, "feature_importances_"):
+            _fi = dict(zip(X_train.columns.tolist(), _base.feature_importances_.tolist()))
+    except Exception:
+        pass
+
     # ── Persist metrics to SQLite ────────────────────────────────────────
     try:
         create_model_metrics_table()
@@ -861,6 +870,7 @@ def train_models(
         "single_class_collapse": best_metrics.get("single_class_collapse", False),
         "zero_draw_predictions": best_metrics.get("zero_draw_predictions", False),
         "ml_beats_baseline_f1": base_f1 < best_metrics["f1_macro"],
+        "feature_importances": _fi
     }
 
 

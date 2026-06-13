@@ -95,7 +95,7 @@
 **בדיקות שצריך לעשות לפני שמעביר לאדם 3:**
 - [ ] `models/model.pkl` נוצר בהצלחה
 - [ ] `models/metrics.json` מכיל accuracy ו-F1
-- [ ] `match_predictions` מכיל 48 שורות עם tournament_year=2026
+- [ ] `match_predictions` מכיל שורות עם tournament_year=2026
 - [ ] accuracy על test set לפחות 50% (מעל random)
 
 ---
